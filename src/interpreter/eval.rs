@@ -1,24 +1,15 @@
-//! [`EvalContext`]: load a program, eval statements/expressions, run hooks.
+//! [`EvalContext`]: load a program, eval statements/expressions.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::host::HostEffect;
 use crate::parser::*;
 use crate::{RuntimeError, Span};
 
 use super::ops::*;
 use super::resolver::*;
 use super::value::*;
-
-/// One entity in the play world, for `strata.find`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorldEntry {
-    pub name: String,
-    pub x: f64,
-    pub y: f64,
-}
 
 pub struct EvalContext {
     pub stdout: String,
@@ -36,28 +27,14 @@ pub struct EvalContext {
     type_traits: HashMap<String, Vec<String>>,
     /// Parent type of the method currently executing, for `super.method`.
     super_type: Option<String>,
-    pub(super) effects: Vec<HostEffect>,
     module_resolver: Rc<RefCell<dyn ModuleResolver>>,
     loaded_modules: Rc<RefCell<HashMap<String, ModuleRef>>>,
-    /// Held keys CSV for `input.held` (set by the play host each tick).
-    pub(super) keys: String,
-    /// Just-pressed keys CSV for `input.pressed`.
-    pub(super) pressed: String,
-    /// This entity's scene name for `strata.find`.
-    find_self_name: String,
-    find_self_x: f64,
-    find_self_y: f64,
-    /// Other (and self) entities this tick, world coords.
-    find_world: Vec<WorldEntry>,
     /// Set when `return` runs inside a `match` expression so the enclosing function exits.
     pending_return: Option<Value>,
-    /// Host modules (`strata`, `input`, `io`, `time`) the program imported.
+    /// Host modules (`io`, `time`) the program imported.
     imported_host: HashSet<String>,
     /// Capture for `time.elapsed` — this VM, not frame `dt`.
     pub(super) started: Clock,
-    /// `@node` class instance for this program, if any.
-    node_class: Option<String>,
-    node_instance: Option<Value>,
     /// Function tables of modules whose bodies are on the call stack.
     pub(super) module_fns: Vec<HashMap<String, FnDecl>>,
 }
@@ -157,18 +134,9 @@ impl EvalContext {
             trait_signals: HashMap::new(),
             type_traits: HashMap::new(),
             super_type: None,
-            effects: Vec::new(),
             module_resolver: resolver,
             loaded_modules: Rc::new(RefCell::new(HashMap::new())),
-            keys: String::new(),
-            pressed: String::new(),
-            find_self_name: String::new(),
-            find_self_x: 0.0,
-            find_self_y: 0.0,
-            find_world: Vec::new(),
             pending_return: None,
-            node_class: None,
-            node_instance: None,
             imported_host: HashSet::new(),
             module_fns: Vec::new(),
             started: Clock::capture(),
@@ -194,11 +162,8 @@ impl EvalContext {
     fn init_stdlib(&mut self) {
         self.stdlib.insert("__str".to_string(), HashMap::new());
         self.stdlib.insert("__math".to_string(), HashMap::new());
-        self.stdlib.insert("strata".to_string(), HashMap::new());
-        self.stdlib.insert("input".to_string(), HashMap::new());
         self.stdlib.insert("io".to_string(), HashMap::new());
         self.stdlib.insert("time".to_string(), HashMap::new());
-        self.stdlib.insert("ui".to_string(), HashMap::new());
         self.stdlib.insert("Array".to_string(), HashMap::new());
     }
 
@@ -213,7 +178,6 @@ impl EvalContext {
 
     /// Register declarations and evaluate top-level consts/vars without calling `main`.
     pub fn load_program(&mut self, program: &[Item]) -> Result<(), RuntimeError> {
-        let mut node_class_name: Option<String> = None;
         // First pass: register declarations
         for item in program {
             match item {
@@ -233,9 +197,6 @@ impl EvalContext {
                 }
                 Item::ClassDecl(c) => {
                     self.register_class(c);
-                    if c.is_node {
-                        node_class_name = Some(c.name.clone());
-                    }
                 }
                 Item::TraitDecl(t) => {
                     self.register_trait_decl(t);
@@ -311,11 +272,6 @@ impl EvalContext {
                 }
                 _ => {}
             }
-        }
-        if let Some(name) = node_class_name {
-            let inst = self.instantiate_class(&name, Span::default())?;
-            self.node_class = Some(name);
-            self.node_instance = Some(inst);
         }
         Ok(())
     }
@@ -583,269 +539,9 @@ impl EvalContext {
         }
     }
 
-    /// Call a registered function by name (e.g. `on_ready`, `on_update`).
+    /// Call a registered function by name.
     pub fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         self.call_fn(name, args, Span::default())
-    }
-
-    pub fn has_fn(&self, name: &str) -> bool {
-        self.functions.contains_key(name)
-    }
-
-    pub fn has_node(&self) -> bool {
-        self.node_instance.is_some()
-    }
-
-    fn resolve_hook_name(&self, hook: &str) -> String {
-        if hook == "on_ready" {
-            if let Some(ty) = &self.node_class {
-                if self.has_own_method(ty, "on_create") {
-                    return "on_create".to_string();
-                }
-                if self.has_own_method(ty, "on_ready") {
-                    return "on_ready".to_string();
-                }
-                if self.lookup_method(ty, "on_create").is_some() {
-                    return "on_create".to_string();
-                }
-            }
-        }
-        hook.to_string()
-    }
-
-    fn has_own_method(&self, ty: &str, name: &str) -> bool {
-        self.methods.get(ty).is_some_and(|m| m.contains_key(name))
-    }
-
-    pub fn has_hook(&self, name: &str) -> bool {
-        if let Some(ty) = &self.node_class {
-            let hook = self.resolve_hook_name(name);
-            self.lookup_method(ty, &hook).is_some()
-        } else {
-            self.has_fn(name)
-        }
-    }
-
-    pub fn call_hook(&mut self, name: &str, extra: Vec<Value>) -> Result<Value, RuntimeError> {
-        if let (Some(ty), Some(inst)) = (self.node_class.clone(), self.node_instance.clone()) {
-            let hook = self.resolve_hook_name(name);
-            match self.call_type_method(&ty, &inst, &hook, extra, Span::default())? {
-                Some(v) => Ok(v),
-                None => Ok(Value::Void),
-            }
-        } else {
-            self.call(name, extra)
-        }
-    }
-
-    /// Script-tab Run: if this file is not `@node`, instantiate the first class that
-    /// defines `on_create` or `on_ready` so those methods can be called.
-    pub fn adopt_preview_class(&mut self, program: &[Item]) -> Result<(), RuntimeError> {
-        if self.node_instance.is_some() {
-            return Ok(());
-        }
-        fn walk<'a>(items: &'a [Item], out: &mut Vec<&'a ClassDecl>) {
-            for item in items {
-                match item {
-                    Item::ClassDecl(c) => out.push(c),
-                    Item::Mod(m) => walk(&m.items, out),
-                    _ => {}
-                }
-            }
-        }
-        let mut classes = Vec::new();
-        walk(program, &mut classes);
-        for c in classes {
-            if self.has_own_method(&c.name, "on_create") || self.has_own_method(&c.name, "on_ready")
-            {
-                let inst = self.instantiate_class(&c.name, Span::default())?;
-                self.node_class = Some(c.name.clone());
-                self.node_instance = Some(inst);
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-
-    fn ready_extra_args(&self, name: &str, x: f64, y: f64) -> Vec<Value> {
-        let n = if let Some(ty) = &self.node_class {
-            let hook = self.resolve_hook_name("on_ready");
-            self.lookup_method(ty, &hook)
-                .map(|(_, decl)| crate::parser::params_after_self(&decl.params).len())
-                .unwrap_or(0)
-        } else if let Some(decl) = self.functions.get("on_ready") {
-            decl.params.len()
-        } else {
-            0
-        };
-        match n {
-            0 => Vec::new(),
-            1 => vec![Value::String(name.to_string())],
-            2 => vec![Value::String(name.to_string()), Value::Float(x)],
-            _ => vec![
-                Value::String(name.to_string()),
-                Value::Float(x),
-                Value::Float(y),
-            ],
-        }
-    }
-
-    /// Script-tab Run: `on_create` / `on_ready` on a class, or a free `on_ready`.
-    pub fn run_ready_preview(&mut self, name: &str, x: f64, y: f64) -> Result<Value, RuntimeError> {
-        self.sync_node_transform(name, x, y, 0.0);
-        if self.has_node() {
-            if !self.has_hook("on_ready") {
-                return Err(runtime_err(
-                    "no on_ready / on_create method on this class".to_string(),
-                    Span::default(),
-                ));
-            }
-            let extra = self.ready_extra_args(name, x, y);
-            return self.call_hook("on_ready", extra);
-        }
-        if self.has_fn("on_ready") {
-            let extra = self.ready_extra_args(name, x, y);
-            return self.call("on_ready", extra);
-        }
-        Err(runtime_err(
-            "no on_ready hook (free function or class method)".to_string(),
-            Span::default(),
-        ))
-    }
-
-    pub fn sync_node_transform(&mut self, name: &str, x: f64, y: f64, z: f64) {
-        let Some(Value::Struct { fields, .. }) = &self.node_instance else {
-            return;
-        };
-        let mut map = fields.borrow_mut();
-        map.insert("name".to_string(), Value::String(name.to_string()));
-        map.insert("x".to_string(), Value::Float(x));
-        map.insert("y".to_string(), Value::Float(y));
-        map.insert("z".to_string(), Value::Float(z));
-    }
-
-    pub fn read_node_transform(&self) -> Option<(f64, f64, f64)> {
-        let Value::Struct { fields, .. } = self.node_instance.as_ref()? else {
-            return None;
-        };
-        let map = fields.borrow();
-        Some((
-            value_as_float(map.get("x"))?,
-            value_as_float(map.get("y"))?,
-            value_as_float(map.get("z")).unwrap_or(0.0),
-        ))
-    }
-
-    fn instantiate_class(&mut self, name: &str, span: Span) -> Result<Value, RuntimeError> {
-        let def = self
-            .structs
-            .get(name)
-            .cloned()
-            .ok_or_else(|| runtime_err(format!("undefined struct '{name}'"), span))?;
-        let field_names = def.fields.clone();
-        let defaults = def.defaults.clone();
-        let mut values = HashMap::new();
-        for field in field_names {
-            if let Some((_, expr)) = defaults.iter().find(|(n, _)| n == &field) {
-                values.insert(field, self.eval_expr(expr)?);
-            } else {
-                values.insert(field, Value::None);
-            }
-        }
-        Ok(Value::Struct {
-            name: name.to_string(),
-            fields: Rc::new(RefCell::new(values)),
-        })
-    }
-
-    /// Take host effects recorded since the last take (or since the context was created).
-    pub fn take_effects(&mut self) -> Vec<HostEffect> {
-        std::mem::take(&mut self.effects)
-    }
-
-    /// Bind this tick's held / just-pressed keys for `input.held` / `input.pressed`.
-    pub fn set_input(&mut self, keys: impl Into<String>, pressed: impl Into<String>) {
-        self.keys = keys.into();
-        self.pressed = pressed.into();
-    }
-
-    /// Bind this tick's world snapshot for `strata.find` (by name or nearest).
-    pub fn set_world(
-        &mut self,
-        self_name: impl Into<String>,
-        x: f64,
-        y: f64,
-        world: Vec<WorldEntry>,
-    ) {
-        self.find_self_name = self_name.into();
-        self.find_self_x = x;
-        self.find_self_y = y;
-        self.find_world = world;
-    }
-
-    pub(super) fn find_by_name(&self, name: &str) -> Value {
-        if self.find_world.iter().any(|e| e.name == name) {
-            Value::String(name.to_string())
-        } else {
-            Value::None
-        }
-    }
-
-    pub(super) fn find_nearest(&self) -> Value {
-        let mut best: Option<(&str, f64)> = None;
-        for e in &self.find_world {
-            if e.name == self.find_self_name
-                && (e.x - self.find_self_x).abs() < f64::EPSILON
-                && (e.y - self.find_self_y).abs() < f64::EPSILON
-            {
-                continue;
-            }
-            let dx = e.x - self.find_self_x;
-            let dy = e.y - self.find_self_y;
-            let d = dx * dx + dy * dy;
-            match best {
-                None => best = Some((e.name.as_str(), d)),
-                Some((_, bd)) if d < bd => best = Some((e.name.as_str(), d)),
-                _ => {}
-            }
-        }
-        match best {
-            Some((name, _)) => Value::String(name.to_string()),
-            None => Value::None,
-        }
-    }
-
-    /// Write Inspector overrides into module `var`s or the `@node` instance.
-    /// Unknown names and type mismatches are skipped.
-    pub fn apply_exports(
-        &mut self,
-        exports: &[crate::ExportField],
-        props: &HashMap<String, serde_json::Value>,
-    ) {
-        for field in exports {
-            let Some(raw) = props.get(&field.name) else {
-                continue;
-            };
-            let Some(value) = crate::export::value_from_json(&field.ty, raw) else {
-                continue;
-            };
-            if self.set_node_field(&field.name, value.clone()) {
-                continue;
-            }
-            let _ = self.env.set(&field.name, value, Span::default());
-        }
-    }
-
-    fn set_node_field(&self, name: &str, value: Value) -> bool {
-        let Some(Value::Struct { fields, .. }) = &self.node_instance else {
-            return false;
-        };
-        let mut map = fields.borrow_mut();
-        if !map.contains_key(name) {
-            return false;
-        }
-        map.insert(name.to_string(), value);
-        true
     }
 
     fn eval_import(&mut self, import: &Import, span: Span) -> Result<(), RuntimeError> {
@@ -854,18 +550,13 @@ impl EvalContext {
         }
         let module_name = &import.path[0];
 
-        // Native host modules (`strata`, `input`, `io`, `time`, `ui`) — require `import`.
-        // `import strata.Sprite` is the node type from `node.rg`, not a host fn.
-        if crate::stdlib::is_node_type_import(&import.path) {
-            self.load_module("node", span)?;
-            return Ok(());
-        }
+        // Native host modules (`io`, `time`) — require `import`.
         if crate::stdlib::is_host_module(module_name)
             && !crate::stdlib::is_internal_host(module_name)
         {
             self.imported_host.insert(module_name.clone());
             if import.path.len() == 1 {
-                // import strata; — allow strata.move etc.
+                // import io; — allow io.read_text etc.
             } else if import.is_from && import.path.len() == 2 {
                 let item_name = &import.path[1];
                 let alias = import.alias.as_ref().unwrap_or(item_name).clone();

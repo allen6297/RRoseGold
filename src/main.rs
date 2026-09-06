@@ -10,7 +10,7 @@ use rosegold::{SymbolInfo, check_file, check_source_at, def_at, hover_at, siblin
 fn usage() -> ! {
     eprintln!(
         "\
-RoseGold — Strata scripting language
+RoseGold — scripting language
 
 Usage:
   rosegold check [--json] [--stdin] <file>
@@ -234,7 +234,7 @@ fn stdlib_rg_path(name: &str, from: &Path) -> Option<PathBuf> {
     let file = format!("{stem}.rg");
     let mut dir = from.parent().unwrap_or(from).to_path_buf();
     for _ in 0..14 {
-        let cand = dir.join("crates/rosegold/stdlib").join(&file);
+        let cand = dir.join("stdlib").join(&file);
         if cand.exists() {
             return Some(cand.canonicalize().unwrap_or(cand));
         }

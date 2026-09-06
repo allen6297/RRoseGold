@@ -1,6 +1,19 @@
 [package]
-name = "rose_gold"
+name = "rosegold"
 version = "0.1.0"
 edition = "2024"
+description = "RoseGold scripting language: lexer, parser, typecheck, and interpreter"
+license = "MIT"
+repository = "https://github.com/allen6297/RRoseGold"
+
+[lib]
+name = "rosegold"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rosegold"
+path = "src/main.rs"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

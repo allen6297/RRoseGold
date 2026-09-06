@@ -1,4 +1,4 @@
-/** Shared lookup helpers over catalog.json. Same keys as Script mode. */
+/** Shared lookup helpers over catalog.json. */
 
 const DOCS = require("./catalog.json");
 

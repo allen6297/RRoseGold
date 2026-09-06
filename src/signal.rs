@@ -1,4 +1,4 @@
-//! Inspector connection metadata: `signal` decls and callable `fn`s.
+//! Metadata for `signal` decls and callable `fn`s.
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,7 +8,7 @@ use crate::interpreter::{HashMapResolver, ModuleResolver};
 use crate::lexer::Lexer;
 use crate::parser::{Item, Parser, SignalDecl, Type};
 
-/// Inspector metadata for one `signal` declaration. Parse-only; no eval.
+/// Listing metadata for one `signal` declaration. Parse-only; no eval.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignalField {
@@ -23,7 +23,7 @@ pub struct SignalParam {
     pub ty: String,
 }
 
-/// Top-level `fn` names for Inspector method pickers.
+/// Top-level `fn` names for tooling.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FnMeta {

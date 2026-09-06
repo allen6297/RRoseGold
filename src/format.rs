@@ -105,15 +105,6 @@ impl Printer {
                 self.docs(v.doc.as_deref());
                 self.pad();
                 self.vis(v.is_pub);
-                if v.exported {
-                    if let Some(g) = &v.export_group {
-                        self.write("@export_group(\"");
-                        self.write(g);
-                        self.write("\")\n");
-                        self.pad();
-                    }
-                    self.write("@export ");
-                }
                 self.var_decl(v);
                 self.newline();
             }
@@ -159,11 +150,6 @@ impl Printer {
             Item::ClassDecl(c) => {
                 self.docs(c.doc.as_deref());
                 self.pad();
-                if c.is_node {
-                    self.write("@node");
-                    self.newline();
-                    self.pad();
-                }
                 self.vis(c.is_pub);
                 self.write("class ");
                 self.write(&c.name);
@@ -181,15 +167,6 @@ impl Printer {
                 for f in &c.fields {
                     self.hashes(&f.leading);
                     self.pad();
-                    if let Some(v) = c.exported_fields.iter().find(|v| v.name == f.name) {
-                        if let Some(g) = &v.export_group {
-                            self.write("@export_group(\"");
-                            self.write(g);
-                            self.write("\")\n");
-                            self.pad();
-                        }
-                        self.write("@export ");
-                    }
                     self.write("var ");
                     self.write(&f.name);
                     self.write(": ");

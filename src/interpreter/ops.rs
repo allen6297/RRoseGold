@@ -1,8 +1,5 @@
 //! Runtime helpers: arithmetic, bitwise ops, equality, formatting, and `io`.
 
-use std::collections::HashMap;
-
-use crate::host::HostEffect;
 use crate::parser::AssignOp;
 use crate::{RuntimeError, Span};
 
@@ -15,64 +12,11 @@ pub(super) fn runtime_err(message: impl Into<String>, span: Span) -> RuntimeErro
     }
 }
 
-pub(super) fn value_as_float(v: Option<&Value>) -> Option<f64> {
-    match v {
-        Some(Value::Float(n)) => Some(*n),
-        Some(Value::Int(n)) => Some(*n as f64),
-        _ => None,
-    }
-}
-
 pub(super) fn as_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Float(n) => Some(*n),
         Value::Int(n) => Some(*n as f64),
         _ => None,
-    }
-}
-
-pub(super) fn csv_has(csv: &str, code: &str) -> bool {
-    if code.is_empty() {
-        return false;
-    }
-    csv.split(',').any(|token| token.trim() == code)
-}
-
-pub(super) fn value_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::Int(n) => serde_json::json!(n),
-        Value::Float(n) => serde_json::json!(n),
-        Value::Bool(b) => serde_json::json!(b),
-        Value::String(s) => serde_json::json!(s),
-        _ => serde_json::Value::Null,
-    }
-}
-
-pub(super) fn map_string(map: &HashMap<String, Value>, key: &str) -> Option<String> {
-    match map.get(key) {
-        Some(Value::String(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-pub(super) fn map_f64(map: &HashMap<String, Value>, key: &str) -> Option<f64> {
-    map.get(key).and_then(as_f64)
-}
-
-pub(super) fn spawn_from_map(map: &HashMap<String, Value>) -> HostEffect {
-    HostEffect::Spawn {
-        name: map_string(map, "name").unwrap_or_else(|| "Entity".into()),
-        kind: map_string(map, "kind").unwrap_or_else(|| "sprite".into()),
-        x: map_f64(map, "x").unwrap_or(0.0),
-        y: map_f64(map, "y").unwrap_or(0.0),
-        width: map_f64(map, "w")
-            .or_else(|| map_f64(map, "width"))
-            .unwrap_or(32.0),
-        height: map_f64(map, "h")
-            .or_else(|| map_f64(map, "height"))
-            .unwrap_or(32.0),
-        color: map_string(map, "color").unwrap_or_else(|| "#61afef".into()),
-        script: map_string(map, "script"),
     }
 }
 

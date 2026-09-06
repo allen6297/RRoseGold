@@ -342,7 +342,6 @@ impl<'a> TypeChecker<'a> {
 
         self.preload_crate_types();
         self.check_inheritance();
-        self.check_node_classes(program);
 
         for item in program {
             self.check_trait_impl(item);
@@ -414,103 +413,6 @@ impl<'a> TypeChecker<'a> {
             current = self.parents.get(&ty).cloned();
         }
         None
-    }
-
-    fn extends_node_base(&self, start: &str) -> bool {
-        let mut current = Some(start.to_string());
-        let mut seen = HashSet::new();
-        while let Some(ty) = current {
-            if !seen.insert(ty.clone()) {
-                break;
-            }
-            if crate::stdlib::node_kind(&ty).is_some() {
-                return true;
-            }
-            current = self.parents.get(&ty).cloned();
-        }
-        false
-    }
-
-    fn check_node_classes(&mut self, program: &[Item]) {
-        let mut nodes: Vec<&ClassDecl> = Vec::new();
-        for item in program {
-            if let Item::ClassDecl(c) = item {
-                if c.is_node {
-                    nodes.push(c);
-                }
-            }
-        }
-        if nodes.len() > 1 {
-            for c in nodes.iter().skip(1) {
-                self.error(
-                    c.span,
-                    "only one @node class is allowed per file".to_string(),
-                );
-            }
-        }
-        for c in nodes {
-            match &c.parent {
-        None => self.error(
-          c.span,
-          format!(
-            "@node class '{}' must extend a node type (Sprite, Empty, Tilemap, Camera, Mesh, Light, Node)",
-            c.name
-          ),
-        ),
-        Some(parent) => {
-          if !self.extends_node_base(parent) {
-            self.error(
-              c.span,
-              format!(
-                "@node class '{}' must extend a node type, not '{parent}'",
-                c.name
-              ),
-            );
-          }
-        }
-      }
-            for m in c.all_methods() {
-                self.check_node_hook_sig(&c.name, m, c.span);
-            }
-        }
-    }
-
-    fn check_node_hook_sig(&mut self, class_name: &str, m: &FnDecl, span: Span) {
-        if !is_node_hook(&m.name) {
-            if let Some(hint) = suggest_node_hook(&m.name) {
-                self.error(
-                    span,
-                    format!(
-                        "@node method '{}' is not a lifecycle hook; did you mean '{hint}'?",
-                        m.name
-                    ),
-                );
-            }
-            return;
-        }
-        let extras = params_after_self(&m.params);
-        let extra = extras.len();
-        let extra_ty = |i: usize| extras.get(i).map(|p| p.ty.name.as_str());
-        let ok = match m.name.as_str() {
-            "on_create" | "on_ready" | "on_destroy" => extra == 0,
-            "on_update" => {
-                extra == 1
-                    && extra_ty(0).is_some_and(|t| t == "Float" || t.is_empty() || t == "None")
-            }
-            "on_enter" | "on_exit" => {
-                extra == 1
-                    && extra_ty(0).is_some_and(|t| t == "Str" || t == "String" || t.is_empty())
-            }
-            _ => return,
-        };
-        if !ok {
-            let expected = match m.name.as_str() {
-                "on_update" => "(self, dt: Float)",
-                "on_enter" | "on_exit" => "(self, other: Str)",
-                _ => "(self)",
-            };
-            self.error(span, format!("{class_name}.{} must be {expected}", m.name));
-        }
     }
 
     fn register_trait(&mut self, t: &TraitDecl, warn_dup: bool) {
@@ -733,10 +635,6 @@ impl<'a> TypeChecker<'a> {
         let module_name = import.path[0].as_str();
 
         if crate::stdlib::is_host_module(module_name) {
-            if crate::stdlib::is_node_type_import(&import.path) {
-                self.try_load_user_module("node", import.span);
-                return;
-            }
             if import.is_from && import.path.len() >= 2 {
                 let item_name = import.path.last().unwrap();
                 let bind = import.alias.as_ref().unwrap_or(item_name);
@@ -1508,15 +1406,6 @@ impl<'a> TypeChecker<'a> {
                     self.error(
                         span,
                         format!("{canonical}.{name} expected {expected} args, got {arg_count}"),
-                    );
-                }
-                return;
-            }
-            if canonical == "strata" && (name == "destroy" || name == "find") {
-                if arg_count > 1 {
-                    self.error(
-                        span,
-                        format!("{canonical}.{name} expected 0 or 1 args, got {arg_count}"),
                     );
                 }
                 return;

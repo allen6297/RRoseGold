@@ -58,13 +58,6 @@ const TYPES = [
   "Result",
   "Vec2",
   "Vec3",
-  "Node",
-  "Empty",
-  "Sprite",
-  "Tilemap",
-  "Camera",
-  "Mesh",
-  "Light",
 ];
 
 const KIND = {
@@ -88,8 +81,6 @@ function findRustCli(startDir) {
     const candidates = [
       path.join(dir, "target", "release", "rosegold"),
       path.join(dir, "target", "debug", "rosegold"),
-      path.join(dir, "crates", "rosegold", "target", "release", "rosegold"),
-      path.join(dir, "crates", "rosegold", "target", "debug", "rosegold"),
     ];
     if (process.platform === "win32") {
       candidates.push(
@@ -159,7 +150,7 @@ function runCli(args, stdin, hintPath) {
       resolve({
         code: 1,
         stdout: "",
-        stderr: `${err.message} (cmd=${cmd}). Build with: cargo build -p rosegold`,
+        stderr: `${err.message} (cmd=${cmd}). Build with: cargo build`,
       });
     });
     child.on("close", (code) => {
@@ -286,7 +277,7 @@ function skipStringBack(text, i) {
 }
 
 /**
- * Catalog call site at `position` (signature help). Same walk as Script mode.
+ * Catalog call site at `position` (signature help).
  * @param {vscode.TextDocument} document
  * @param {vscode.Position} position
  */
@@ -383,7 +374,7 @@ function emitAfterDot() {
   );
   item.detail = "signal";
   item.documentation = new vscode.MarkdownString(
-    "```rosegold\nsignal.emit(args…)\n```\n\nFire this signal. Inspector connections run the target method.",
+    "```rosegold\nsignal.emit(args…)\n```\n\nFire this signal.",
     true
   );
   item.insertText = new vscode.SnippetString("emit(${0})");
@@ -458,18 +449,6 @@ function localCompletions(document) {
 function extraSnippets() {
   const extra = [
     {
-      label: "@export",
-      kind: vscode.CompletionItemKind.Keyword,
-      detail: "inspector property",
-      insert: "@export var ${1:name}: ${2:Float} = ${3:0.0};",
-    },
-    {
-      label: "@export_group",
-      kind: vscode.CompletionItemKind.Keyword,
-      detail: "inspector group",
-      insert: '@export_group("${1:Name}")',
-    },
-    {
       label: "@test",
       kind: vscode.CompletionItemKind.Keyword,
       detail: "test function",
@@ -480,13 +459,6 @@ function extraSnippets() {
       kind: vscode.CompletionItemKind.Keyword,
       detail: "call as a method",
       insert: "@ufcs\nfn ${1:name}(${2:n}: ${3:Float}): ${4:Float} {\n\t$0\n}",
-    },
-    {
-      label: "@node",
-      kind: vscode.CompletionItemKind.Keyword,
-      detail: "scene node class",
-      insert:
-        "@node\nclass ${1:MyNode} extends ${2:Sprite} {\n\tfn on_create() {\n\t\t$0\n\t}\n\tfn on_update(dt: Float) {\n\t\tpass;\n\t}\n\tfn on_destroy() {\n\t\tpass;\n\t}\n}",
     },
     {
       label: ".emit",
@@ -501,22 +473,6 @@ function extraSnippets() {
       insert: "signal ${1:name}(${2:args});",
     },
   ];
-  for (const key of [
-    "strata.move",
-    "strata.after",
-    "strata.find",
-    "input.pressed",
-    "input.held",
-  ]) {
-    const e = catalog.lookup(key);
-    if (!e || !e.template) continue;
-    extra.push({
-      label: key,
-      kind: vscode.CompletionItemKind.Function,
-      detail: e.detail,
-      insert: catalog.toSnippet(`${key.slice(0, key.indexOf("."))}.${e.template}`),
-    });
-  }
   return extra.map((s) => {
     const item = new vscode.CompletionItem(s.label, s.kind);
     item.detail = s.detail;
@@ -555,17 +511,12 @@ function provideCompletions(document, position) {
   if (extendsM) {
     const local = scan.allClasses(files).filter((n) => n !== enclosing?.name);
     return [
-      ...scan.NODE_BASES.map((n) => {
-        const e = catalog.lookup(n);
-        return e ? completionFromEntry(e) : nameItem(n, vscode.CompletionItemKind.Class, "node");
-      }),
       ...local.map((n) => nameItem(n, vscode.CompletionItemKind.Class, "class")),
     ];
   }
   const implFor = line.match(/\bimpl\s+[A-Za-z_]\w*\s+for\s+([A-Za-z_]*)$/);
   if (implFor) {
     return [
-      ...scan.NODE_BASES.map((n) => nameItem(n, vscode.CompletionItemKind.Class, "node")),
       ...scan.allClasses(files).map((n) => nameItem(n, vscode.CompletionItemKind.Class, "class")),
     ];
   }
@@ -591,23 +542,8 @@ function provideCompletions(document, position) {
   for (const e of catalog.types()) {
     items.push(completionFromEntry(e));
   }
-  if (enclosing?.isNode) {
-    for (const [label, insert] of [
-      ["on_create", "fn on_create() {\n\t$0\n}"],
-      ["on_update", "fn on_update(dt: Float) {\n\t$0\n}"],
-      ["on_destroy", "fn on_destroy() {\n\t$0\n}"],
-      ["on_enter", "fn on_enter(other: Str) {\n\t$0\n}"],
-      ["on_exit", "fn on_exit(other: Str) {\n\t$0\n}"],
-    ]) {
-      const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Function);
-      item.detail = "@node hook";
-      item.insertText = new vscode.SnippetString(insert);
-      items.push(item);
-    }
-  } else {
-    for (const e of catalog.hooks()) {
-      items.push(completionFromEntry(e));
-    }
+  for (const e of catalog.hooks()) {
+    items.push(completionFromEntry(e));
   }
   for (const e of catalog.builtins()) {
     items.push(completionFromEntry(e));
@@ -668,7 +604,7 @@ async function refreshDiagnostics(doc) {
       statusBar.text = "$(error) RoseGold";
       statusBar.tooltip =
         (payload && payload.error) ||
-        "check failed — cargo build -p rosegold, or set RoseGold: Cli Path";
+        "check failed — cargo build, or set RoseGold: Cli Path";
     }
     return;
   }
@@ -759,7 +695,6 @@ function documentSymbols(doc) {
     { re: /^[ \t]*(?:pub[ \t]+)?signal[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Event },
     { re: /^[ \t]*(?:pub[ \t]+)?mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Namespace },
     { re: /^[ \t]*(?:pub[ \t]+)?const[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Constant },
-    { re: /^[ \t]*@export(?:_group)?[ \t]+var[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Property },
     { re: /^[ \t]*var[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Variable },
   ];
   for (const { re, kind } of patterns) {
@@ -774,12 +709,7 @@ function documentSymbols(doc) {
       );
       const lineText = doc.lineAt(pos.line).text;
       const full = new vscode.Range(pos.line, 0, pos.line, lineText.length);
-      let detail = "";
-      if (kind === vscode.SymbolKind.Class && pos.line > 0) {
-        const prev = doc.lineAt(pos.line - 1).text.trim();
-        if (prev === "@node") detail = "@node";
-      }
-      symbols.push(new vscode.DocumentSymbol(m[1], detail, kind, full, nameRange));
+      symbols.push(new vscode.DocumentSymbol(m[1], "", kind, full, nameRange));
     }
   }
   return symbols;

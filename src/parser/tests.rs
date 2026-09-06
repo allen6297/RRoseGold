@@ -1,4 +1,4 @@
-//! Parser unit tests (docs, `@ufcs` / `@node`, class/trait/enum shape).
+//! Parser unit tests (docs, `@ufcs`, class/trait/enum shape).
 
 use super::*;
 use crate::lexer::Lexer;
@@ -9,14 +9,13 @@ fn parse(src: &str) -> Vec<Item> {
 }
 
 #[test]
-fn docs_attach_to_export_var() {
-    let items = parse("## Degrees per second.\n@export var spin: Float = 8.0;\n");
+fn docs_attach_to_var() {
+    let items = parse("## Degrees per second.\nvar spin: Float = 8.0;\n");
     let Item::VarDecl(v) = &items[0] else {
         panic!("{:?}", items[0])
     };
     assert_eq!(v.name, "spin");
     assert_eq!(v.doc.as_deref(), Some("Degrees per second."));
-    assert!(v.exported);
 }
 
 #[test]
@@ -55,37 +54,28 @@ fn ufcs_attr_sets_flag() {
 }
 
 #[test]
-fn node_attr_sets_flag() {
-    let items =
-        parse("@node\nclass MyNode extends Sprite {\n    fn on_create(self) { pass; }\n}\n");
-    let Item::ClassDecl(c) = &items[0] else {
-        panic!("{:?}", items[0])
-    };
-    assert!(c.is_node);
-    assert_eq!(c.name, "MyNode");
-    assert_eq!(c.parent.as_deref(), Some("Sprite"));
+fn unknown_attr_is_error() {
+    let tokens = Lexer::new("@node\nclass Foo {}\n").tokenize().unwrap();
+    let err = Parser::new(tokens).parse().unwrap_err();
+    assert!(err.contains("unknown attribute '@node'"), "{err}");
 }
 
 #[test]
-fn class_export_fields_parse() {
+fn class_fields_parse() {
     let items = parse(
         r#"
-@node
-class Player extends Node {
-    @export_group("Health")
-    @export var max_health: Float;
-    @export var current_health: Float = 10.0;
+class Player {
+    var max_health: Float;
+    var current_health: Float = 10.0;
 }
 "#,
     );
     let Item::ClassDecl(c) = &items[0] else {
         panic!("{:?}", items[0])
     };
-    assert_eq!(c.exported_fields.len(), 2);
-    assert!(c.exported_fields[0].exported);
-    assert_eq!(c.exported_fields[0].name, "max_health");
-    assert_eq!(c.exported_fields[0].export_group.as_deref(), Some("Health"));
-    assert_eq!(c.exported_fields[1].name, "current_health");
+    assert_eq!(c.fields.len(), 2);
+    assert_eq!(c.fields[0].name, "max_health");
+    assert_eq!(c.fields[1].name, "current_health");
 }
 
 #[test]

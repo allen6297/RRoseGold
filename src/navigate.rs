@@ -23,7 +23,7 @@ pub struct SymbolInfo {
 }
 
 /// Hover and go-to-def share this query. Crate stdlib *uses* (`math.sin`,
-/// `Sprite`) resolve into `stdlib/*.rg`. Host APIs (`strata.move`) stay
+/// `Vec2`) resolve into `stdlib/*.rg`. Host APIs (`io.read_text`) stay
 /// `None` so the editor catalog can describe them. Import *sites*
 /// (`import utils`, `from utils import move_line`) resolve to the module file.
 pub fn symbol_at(
@@ -60,10 +60,6 @@ pub fn symbol_at(
         if let Some(item) = &bind.item {
             return export_in_module(&bind.canonical, item, &modules);
         }
-        if crate::stdlib::node_kind(&ident.name).is_some() {
-            return export_in_module("node", &ident.name, &modules)
-                .or_else(|| export_in_module("strata", &ident.name, &modules));
-        }
         return module_symbol(&bind.canonical, &modules);
     }
 
@@ -71,10 +67,6 @@ pub fn symbol_at(
 }
 
 fn prelude_symbol(name: &str, modules: &HashMap<String, String>) -> Option<SymbolInfo> {
-    if crate::stdlib::node_kind(name).is_some() {
-        return export_in_module("node", name, modules)
-            .or_else(|| export_in_module("strata", name, modules));
-    }
     let stem = crate::stdlib::canonical_module(name)?;
     export_in_module(stem, name, modules)
 }
@@ -606,12 +598,14 @@ fn type_string(ty: &Type) -> String {
 mod tests {
     use super::*;
 
-    fn hero() -> String {
-        include_str!("../../../examples/demo-project/scripts/Hero.rg").to_string()
+    fn utils() -> String {
+        "# Shared helpers.\n\nmod utils {\n    pub fn move_line(dx: Float, dy: Float) {\n        print(dx);\n    }\n}\n"
+            .to_string()
     }
 
-    fn utils() -> String {
-        include_str!("../../../examples/demo-project/scripts/utils.rg").to_string()
+    fn hero() -> String {
+        "import utils;\n\nfn main(): Int {\n    utils.move_line(1.0, 0.0);\n    return 0;\n}\n"
+            .to_string()
     }
 
     fn modules() -> HashMap<String, String> {
@@ -622,18 +616,18 @@ mod tests {
     fn def_at_imported_fn() {
         let src = hero();
         // `utils.move_line` on the on_update body
-        let info = def_at(&src, "Hero.rg", 32, 18, modules()).expect("def");
+        let info = def_at(&src, "Hero.rg", 4, 12, modules()).expect("def");
         assert_eq!(info.kind, "fn");
         assert_eq!(info.name, "move_line");
         assert!(info.file.starts_with("utils"), "{}", info.file);
-        assert_eq!(info.line, 6);
+        assert_eq!(info.line, 4);
         assert!(info.signature.contains("move_line"));
         assert!(info.signature.contains("dx"));
     }
 
     #[test]
     fn hover_at_imported_fn_signature() {
-        let info = hover_at(&hero(), "Hero.rg", 32, 18, modules()).expect("hover");
+        let info = hover_at(&hero(), "Hero.rg", 4, 12, modules()).expect("hover");
         assert_eq!(info.signature, "fn move_line(dx: Float, dy: Float)");
     }
 
@@ -643,7 +637,7 @@ mod tests {
         assert_eq!(info.kind, "module");
         assert!(info.file.starts_with("utils"), "{}", info.file);
         assert_eq!(info.signature, "mod utils");
-        assert_eq!(info.line, 5);
+        assert_eq!(info.line, 3);
     }
 
     #[test]
@@ -685,11 +679,10 @@ mod tests {
 
     #[test]
     fn def_at_import_stdlib_type() {
-        let src = "import strata.Sprite;\n";
-        let info = def_at(src, "t.rg", 1, 16, HashMap::new()).expect("Sprite");
-        assert_eq!(info.kind, "class");
-        assert_eq!(info.name, "Sprite");
-        assert!(info.file.contains("node"), "{}", info.file);
+        let src = "import math;\n";
+        let info = def_at(src, "t.rg", 1, 8, HashMap::new()).expect("math");
+        assert_eq!(info.kind, "module");
+        assert!(info.file.contains("math"), "{}", info.file);
     }
 
     #[test]
@@ -721,18 +714,9 @@ mod tests {
     }
 
     #[test]
-    fn def_at_node_type_use() {
-        let src = "import strata.Sprite;\n@node\nclass Foo extends Sprite {\n    fn on_create() { pass; }\n}\n";
-        let info = def_at(src, "t.rg", 3, 20, HashMap::new()).expect("Sprite");
-        assert_eq!(info.kind, "class");
-        assert_eq!(info.name, "Sprite");
-        assert!(info.file.contains("node"), "{}", info.file);
-    }
-
-    #[test]
     fn host_member_is_none() {
-        let src = "fn on_update(): Int {\n    strata.move(1.0, 0.0);\n    return 0;\n}\n";
-        assert!(def_at(src, "t.rg", 2, 12, HashMap::new()).is_none());
+        let src = "fn main(): Int {\n    io.exists(\"x\");\n    return 0;\n}\n";
+        assert!(def_at(src, "t.rg", 2, 7, HashMap::new()).is_none());
     }
 
     #[test]
@@ -752,13 +736,13 @@ mod tests {
         let src = "from utils import move_line;\nfn on_update(): Int {\n    move_line(1.0, 0.0);\n    return 0;\n}\n";
         let info = def_at(src, "t.rg", 3, 5, modules()).expect("from-import");
         assert_eq!(info.name, "move_line");
-        assert_eq!(info.line, 6);
+        assert_eq!(info.line, 4);
     }
 
     #[test]
     fn hover_at_prefers_doc_comment() {
-        let src = "## Degrees per second.\n@export var spin: Float = 8.0;\nfn main(): Int { return 0; }\n";
-        let info = hover_at(src, "t.rg", 2, 14, HashMap::new()).expect("hover");
+        let src = "## Degrees per second.\nvar spin: Float = 8.0;\nfn main(): Int { return 0; }\n";
+        let info = hover_at(src, "t.rg", 2, 5, HashMap::new()).expect("hover");
         assert_eq!(info.name, "spin");
         assert_eq!(info.doc.as_deref(), Some("Degrees per second."));
         assert!(info.signature.contains("spin"));
@@ -766,12 +750,12 @@ mod tests {
 
     #[test]
     fn hover_at_joins_multiline_docs() {
-        let src = "## Called every Play frame.\n## dt is seconds.\nfn on_update(dt: Float): Int { return 0; }\n";
+        let src = "## Clamp to unit range.\n## Inclusive on both ends.\nfn clamp01(n: Float): Float { return n; }\n";
         let info = hover_at(src, "t.rg", 3, 4, HashMap::new()).expect("hover");
-        assert_eq!(info.name, "on_update");
+        assert_eq!(info.name, "clamp01");
         assert_eq!(
             info.doc.as_deref(),
-            Some("Called every Play frame.\ndt is seconds.")
+            Some("Clamp to unit range.\nInclusive on both ends.")
         );
     }
 

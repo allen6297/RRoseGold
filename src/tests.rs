@@ -1,6 +1,13 @@
 //! Language and runtime tests for the public crate API (`run_source`, `check_*`, …).
 
 use super::*;
+use std::path::{Path, PathBuf};
+
+fn example(rel: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join(rel)
+}
 
 fn assert_ok(source: &str) -> String {
     let result = run_source(source);
@@ -15,288 +22,40 @@ fn hello_main() {
 }
 
 #[test]
-fn on_ready_hook() {
-    let out = assert_ok(
-        r#"
-fn on_ready(name: String, x: Float, y: Float): Int {
-    print("[ready]");
-    print("strata:play_sound name=jump.wav");
-    return 0;
-}
-fn main(): Int {
-    return on_ready("Player", 0.0, 0.0);
-}
-"#,
-    );
-    assert!(out.contains("[ready]"));
-    assert!(out.contains("strata:play_sound name=jump.wav"));
-}
-
-#[test]
-fn preview_class_on_ready_method() {
-    let result = run_preview(
-        r#"
-class Player {
-    var max_health: Float = 0.0;
-    fn on_ready(name: String, x: Float, y: Float): Int {
-        max_health = 100.0;
-        print(max_health);
-        print(name);
-        return 0;
-    }
-}
-"#,
-        "Hero",
-        3.0,
-        4.0,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert!(
-        result.stdout.contains("100"),
-        "{stdout}",
-        stdout = result.stdout
-    );
-    assert!(
-        result.stdout.contains("Hero"),
-        "{stdout}",
-        stdout = result.stdout
-    );
-}
-
-#[test]
-fn preview_node_on_create() {
-    let result = run_preview(
-        r#"
-import strata.Node;
-
-@node
-class MyNode extends Node {
-    fn on_create() {
-        print("created");
-        print(name);
-    }
-}
-"#,
-        "Root",
-        1.0,
-        2.0,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert!(
-        result.stdout.contains("created"),
-        "{stdout}",
-        stdout = result.stdout
-    );
-    assert!(
-        result.stdout.contains("Root"),
-        "{stdout}",
-        stdout = result.stdout
-    );
-}
-
-#[test]
-fn preview_free_on_ready() {
-    let result = run_preview(
-        r#"
-fn on_ready(name: String, x: Float, y: Float): Int {
-    print(name);
-    return 0;
-}
-"#,
-        "Coin",
-        0.0,
-        0.0,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert!(
-        result.stdout.contains("Coin"),
-        "{stdout}",
-        stdout = result.stdout
-    );
-}
-
-#[test]
-fn preview_resolves_imported_utils() {
-    let utils = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts/utils.rg"),
-    )
-    .unwrap();
-    let hero = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts/Hero.rg"),
-    )
-    .unwrap();
-    let mut modules = HashMap::new();
-    modules.insert("utils.rg".into(), utils.clone());
-    modules.insert("utils".into(), utils);
-    let missing = run_preview(&hero, "Hero", 0.0, 0.0);
-    assert!(!missing.ok, "{}", missing.message);
-    assert!(missing.message.contains("utils"), "{}", missing.message);
-    let result = run_preview_with_modules(&hero, "Hero", 0.0, 0.0, modules);
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert!(
-        result.stdout.contains("[ready]"),
-        "{stdout}",
-        stdout = result.stdout
-    );
-}
-
-#[test]
-fn preview_missing_ready_is_error() {
-    let result = run_preview("class Player { var hp: Float = 1.0; }\n", "X", 0.0, 0.0);
-    assert!(!result.ok, "{}", result.message);
-    assert!(result.message.contains("on_ready"), "{}", result.message);
-}
-
-#[test]
-fn strata_move_records_effect_not_stdout() {
-    let result = run_source(
-        r#"
-import strata;
-fn main(): Int {
-    strata.move(1.5, -2.0);
-    return 0;
-}
-"#,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert!(
-        !result.stdout.contains("strata:"),
-        "strata.move must not print directives: {}",
-        result.stdout
-    );
-    assert_eq!(result.effects, vec![HostEffect::Move { dx: 1.5, dy: -2.0 }]);
-}
-
-#[test]
-fn ui_text_records_effect() {
-    let result = run_source(
-        r#"
-import ui;
-fn main(): Int {
-    ui.text(16.0, 24.0, "coins 3");
-    return 0;
-}
-"#,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::UiText {
-            x: 16.0,
-            y: 24.0,
-            text: "coins 3".into(),
-        }]
-    );
-}
-
-#[test]
-fn typecheck_ui_text_arity() {
+fn host_module_requires_import() {
     let diags = check_source(
-        r#"
-import ui;
-fn main(): Int {
-    ui.text(1.0);
-    return 0;
-}
-"#,
+        "fn main(): Int { print(io.exists(\".\")); return 0; }\n",
         "t.rg",
     );
     assert!(
         diags
             .iter()
-            .any(|d| d.message.contains("ui.text") && d.message.contains("expected 3 args")),
+            .any(|d| d.message.contains("undefined") || d.message.contains("io")),
         "{diags:?}"
     );
 }
 
 #[test]
-fn strata_spawn_from_map() {
-    let result = run_source(
-        r##"
-import strata;
-fn main(): Int {
-    strata.spawn({ "name": "Orb", "x": 80.0, "y": -20.0, "w": 24.0, "h": 24.0, "color": "#61afef", "script": "CoinSpin.rg" });
-    return 0;
-}
-"##,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::Spawn {
-            name: "Orb".into(),
-            kind: "sprite".into(),
-            x: 80.0,
-            y: -20.0,
-            width: 24.0,
-            height: 24.0,
-            color: "#61afef".into(),
-            script: Some("CoinSpin.rg".into()),
-        }]
-    );
+fn check_hello_rg_is_clean() {
+    let diags = check_file(&example("hello.rg"));
+    assert!(diags.is_empty(), "{diags:?}");
 }
 
 #[test]
-fn strata_spawn_prefab_name() {
-    let result = run_source(
-        r#"
-import strata;
-fn main(): Int {
-    strata.spawn("Orb");
-    return 0;
-}
-"#,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::SpawnPrefab {
-            prefab: "Orb".into(),
-            x: None,
-            y: None,
-        }]
-    );
+fn check_io_time_rg_is_clean() {
+    let diags = check_file(&example("io_time.rg"));
+    assert!(diags.is_empty(), "{diags:?}");
 }
 
-#[test]
-fn strata_spawn_prefab_map() {
-    let result = run_source(
-        r##"
-import strata;
-fn main(): Int {
-    strata.spawn({ "prefab": "Orb", "x": 80.0, "y": -20.0 });
-    return 0;
-}
-"##,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::SpawnPrefab {
-            prefab: "Orb".into(),
-            x: Some(80.0),
-            y: Some(-20.0),
-        }]
-    );
-}
 
-#[test]
-fn typecheck_catches_strata_arity() {
-    let src = r#"
-import strata;
-fn main(): Int {
-    return strata.move(1.0);
-}
-"#;
-    let diags = check_source(src, "t.rg");
-    assert_eq!(diags.len(), 1, "{diags:?}");
-    assert!(
-        diags[0].message.contains("expected 2 args"),
-        "{:?}",
-        diags[0]
-    );
-    assert_eq!(diags[0].line, 4, "arity error should be at the call site");
-}
+
+
+
+
+
+
+
+
 
 #[test]
 fn str_alias_is_string() {
@@ -333,33 +92,7 @@ fn bump(): Int {
     assert_eq!(ctx.call("bump", vec![]).unwrap(), Value::Int(2));
 }
 
-#[test]
-fn on_update_keys() {
-    let out = assert_ok(
-        r#"
-import str;
 
-fn on_update(name: String, x: Float, y: Float, dt: Float, keys: String, pressed: String): Int {
-    if str.contains(keys, "ArrowRight") || str.contains(keys, "KeyD") {
-        print("strata:move dx=3 dy=0");
-    }
-    if str.contains(keys, "ArrowLeft") || str.contains(keys, "KeyA") {
-        print("strata:move dx=-3 dy=0");
-    }
-    if str.contains(pressed, "Space") {
-        print("strata:play_sound name=jump.wav");
-    }
-    return 0;
-}
-
-fn main(): Int {
-    return on_update("Player", 0.0, 0.0, 0.016, "ArrowRight,Space", "Space");
-}
-"#,
-    );
-    assert!(out.contains("strata:move dx=3 dy=0"));
-    assert!(out.contains("strata:play_sound name=jump.wav"));
-}
 
 #[test]
 fn arithmetic_and_loops() {
@@ -508,22 +241,7 @@ fn embedded_stdlib_is_crate_rg() {
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "result"));
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "str"));
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "vec"));
-
-    let demo_scripts =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts");
-    for name in [
-        "math.rg",
-        "option.rg",
-        "result.rg",
-        "str.rg",
-        "checks.rg",
-        "vec.rg",
-    ] {
-        assert!(
-            !demo_scripts.join(name).exists(),
-            "demo must not vendor stdlib copy {name}"
-        );
-    }
+    assert!(!crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "node"));
 }
 
 #[test]
@@ -1844,42 +1562,9 @@ fn main(): Int {
     assert!(out.contains("vec3"), "{out}");
 }
 
-#[test]
-fn node_class_extends_sprite_typechecks() {
-    let diags = check_source(
-        r#"
-import strata.Sprite;
 
-@node
-class MyNode extends Sprite {
-    fn on_create(self) { pass; }
-    fn on_update(self, dt: Float) { pass; }
-    fn on_destroy(self) { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(diags.is_empty(), "{diags:?}");
-}
 
-#[test]
-fn node_class_requires_import() {
-    let diags = check_source(
-        r#"
-@node
-class MyNode extends Sprite {
-    fn on_create() { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("Sprite") || d.message.contains("unknown")),
-        "{diags:?}"
-    );
-}
+
 
 #[test]
 fn math_module_requires_import() {
@@ -1895,159 +1580,21 @@ fn math_module_requires_import() {
     );
 }
 
-#[test]
-fn host_module_requires_import() {
-    let diags = check_source(
-        "fn main(): Int { strata.move(1.0, 0.0); return 0; }\n",
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("undefined") || d.message.contains("strata")),
-        "{diags:?}"
-    );
-}
 
-#[test]
-fn node_class_must_extend_node_type() {
-    let diags = check_source(
-        r#"
-class Point {
-    var x: Float = 0.0;
-}
-@node
-class MyNode extends Point {
-    fn on_create(self) { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("must extend a node type")),
-        "{diags:?}"
-    );
-}
 
-#[test]
-fn node_class_old_update_arity_is_type_error() {
-    let diags = check_source(
-        r#"
-import strata.Sprite;
 
-@node
-class MyNode extends Sprite {
-    fn on_update(self, name: Str, x: Float, y: Float, dt: Float) { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("on_update") && d.message.contains("self, dt")),
-        "{diags:?}"
-    );
-}
 
-#[test]
-fn node_class_hook_without_self_typechecks() {
-    let diags = check_source(
-        r#"
-import strata.Sprite;
 
-@node
-class MyNode extends Sprite {
-    fn on_create() { pass; }
-    fn on_update(dt: Float) { x = x + dt; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(diags.is_empty(), "{diags:?}");
-}
 
-#[test]
-fn node_class_hook_typo_is_type_error() {
-    let diags = check_source(
-        r#"
-import strata.Sprite;
 
-@node
-class MyNode extends Sprite {
-    fn on_upadte(self, dt: Float) { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("on_upadte") && d.message.contains("on_update")),
-        "{diags:?}"
-    );
-}
 
-#[test]
-fn node_class_signal_method_is_not_a_hook_typo() {
-    let diags = check_source(
-        r#"
-import strata.Sprite;
 
-@node
-class MyNode extends Sprite {
-    fn on_coin(self, amount: Int) { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(diags.is_empty(), "{diags:?}");
-}
 
-#[test]
-fn list_nodes_finds_at_node_class() {
-    let nodes = list_nodes(
-        r#"
-import strata.Sprite;
 
-@node
-class MyNode extends Sprite {
-    fn on_create(self) { pass; }
-}
-"#,
-    );
-    assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0].name, "MyNode");
-    assert_eq!(nodes[0].parent, "Sprite");
-    assert_eq!(nodes[0].kind, "sprite");
-}
 
-#[test]
-fn two_node_classes_is_type_error() {
-    let diags = check_source(
-        r#"
-import strata.Sprite;
 
-@node
-class A extends Sprite {
-    fn on_create(self) { pass; }
-}
-@node
-class B extends Empty {
-    fn on_create(self) { pass; }
-}
-"#,
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("only one @node class")),
-        "{diags:?}"
-    );
-}
+
+
 
 #[test]
 fn class_header_impl_missing_method_is_type_error() {
@@ -2371,50 +1918,7 @@ fn main(): Int {
     assert!(out.contains("15"), "{out}");
 }
 
-#[test]
-fn strata_find_by_name_and_nearest() {
-    let src = r#"
-import strata;
-fn main(): Int {
-    print(strata.find("Coin"));
-    print(strata.find("Missing"));
-    print(strata.find());
-    return 0;
-}
-"#;
-    let tokens = lexer::Lexer::new(src).tokenize().unwrap();
-    let program = parser::Parser::new(tokens).parse().unwrap();
-    typecheck::typecheck(&program).unwrap();
-    let mut ctx = EvalContext::new();
-    ctx.load_program(&program).unwrap();
-    ctx.set_world(
-        "Player",
-        0.0,
-        0.0,
-        vec![
-            WorldEntry {
-                name: "Player".into(),
-                x: 0.0,
-                y: 0.0,
-            },
-            WorldEntry {
-                name: "Coin".into(),
-                x: 10.0,
-                y: 0.0,
-            },
-            WorldEntry {
-                name: "Orb".into(),
-                x: 100.0,
-                y: 0.0,
-            },
-        ],
-    );
-    ctx.call("main", vec![]).unwrap();
-    assert!(ctx.stdout.contains("Coin\n"), "{}", ctx.stdout);
-    assert!(ctx.stdout.contains("none\n"), "{}", ctx.stdout);
-    let lines: Vec<&str> = ctx.stdout.lines().collect();
-    assert_eq!(lines[2], "Coin", "{:?}", lines);
-}
+
 
 #[test]
 fn bitwise_ops_on_int() {
@@ -2654,176 +2158,28 @@ fn check_source_with_modules_catches_import_arity() {
     );
 }
 
-#[test]
-fn dotted_relative_path_is_not_a_second_utils_file() {
-    let utils = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts/utils.rg"),
-    )
-    .unwrap();
-    let hero = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts/Hero.rg"),
-    )
-    .unwrap();
-    let mut modules = HashMap::new();
-    modules.insert("utils.rg".into(), utils.clone());
-    modules.insert("utils".into(), utils.clone());
-    modules.insert("scripts.utils".into(), utils);
-    let diags = check_source_with_modules(&hero, "Hero.rg", modules);
-    assert!(
-        diags.is_empty(),
-        "editor keys utils + scripts.utils as one file; got {diags:?}"
-    );
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[test]
-fn check_hero_rg_is_clean() {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts/Hero.rg");
-    let diags = check_file(&path);
-    assert!(diags.is_empty(), "{diags:?}");
-}
-
-#[test]
-fn check_node_ex_rg_is_clean() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/node-ex.rg");
-    let diags = check_file(&path);
-    assert!(diags.is_empty(), "{diags:?}");
-}
-
-#[test]
-fn check_source_at_matches_check_file() {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-project/scripts/Hero.rg");
-    let src = std::fs::read_to_string(&path).unwrap();
-    let diags = check_source_at(&src, &path);
-    assert!(diags.is_empty(), "{diags:?}");
-    let dir = path.parent().unwrap();
-    let modules = sibling_modules(dir, Some("Hero.rg"));
-    assert!(
-        modules.contains_key("utils") || modules.contains_key("utils.rg"),
-        "{:?}",
-        modules.keys().collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn list_exports_skips_hidden_vars() {
-    let fields = list_exports(
-        r#"
-@export var spin: Float = 8.0;
-var frames: Int = 0;
-@export var label: Str = "coin";
-"#,
-    );
-    assert_eq!(fields.len(), 2, "{fields:?}");
-    assert_eq!(fields[0].name, "spin");
-    assert_eq!(fields[0].ty, "Float");
-    assert_eq!(fields[0].group, None);
-    assert_eq!(fields[0].doc, None);
-    assert!(fields[0].default.as_f64().unwrap() > 7.0);
-    assert_eq!(fields[1].name, "label");
-    assert_eq!(fields[1].ty, "Str");
-    assert!(!fields.iter().any(|f| f.name == "frames"));
-}
-
-#[test]
-fn list_exports_class_fields() {
-    let fields = list_exports(
-        r#"
-import strata.Node;
-
-@node
-class Player extends Node {
-    @export_group("Health")
-    @export var max_health: Float;
-    @export var current_health: Float = 10.0;
-    var hidden: Float = 1.0;
-}
-"#,
-    );
-    assert_eq!(fields.len(), 2, "{fields:?}");
-    assert_eq!(fields[0].name, "max_health");
-    assert_eq!(fields[0].ty, "Float");
-    assert_eq!(fields[0].group.as_deref(), Some("Health"));
-    assert_eq!(fields[1].name, "current_health");
-    assert_eq!(fields[1].group.as_deref(), Some("Health"));
-    assert!(fields[1].default.as_f64().unwrap() > 9.0);
-    assert!(!fields.iter().any(|f| f.name == "hidden"));
-}
-
-#[test]
-fn list_exports_sticky_group() {
-    let fields = list_exports(
-        r#"
-@export_group("Movement")
-@export var speed: Float = 120.0;
-@export var jump: Float = 280.0;
-@export_group("Combat")
-@export var hp: Int = 3;
-"#,
-    );
-    assert_eq!(fields.len(), 3, "{fields:?}");
-    assert_eq!(fields[0].group.as_deref(), Some("Movement"));
-    assert_eq!(fields[1].group.as_deref(), Some("Movement"));
-    assert_eq!(fields[2].name, "hp");
-    assert_eq!(fields[2].group.as_deref(), Some("Combat"));
-    assert_eq!(fields[2].default, serde_json::json!(3));
-}
-
-#[test]
-fn list_exports_includes_doc() {
-    let fields = list_exports(
-        "## Degrees per second. Shown on the Coin Inspector card.\n@export var spin: Float = 8.0;\n",
-    );
-    assert_eq!(fields.len(), 1, "{fields:?}");
-    assert_eq!(
-        fields[0].doc.as_deref(),
-        Some("Degrees per second. Shown on the Coin Inspector card.")
-    );
-}
-
-#[test]
-fn apply_exports_overwrites_module_var() {
-    let src = "@export var spin: Float = 8.0;\nfn main(): Int { print(spin); return 0; }\n";
-    let tokens = Lexer::new(src).tokenize().unwrap();
-    let program = Parser::new(tokens).parse().unwrap();
-    let mut ctx = EvalContext::new();
-    ctx.load_program(&program).unwrap();
-    let exports = list_exports(src);
-    let mut props = HashMap::new();
-    props.insert("spin".into(), serde_json::json!(20.0));
-    ctx.apply_exports(&exports, &props);
-    ctx.call("main", vec![]).unwrap();
-    assert!(ctx.stdout.contains("20"), "stdout={}", ctx.stdout);
-}
-
-#[test]
-fn apply_exports_overwrites_class_field() {
-    let src = r#"
-import strata.Node;
-
-@node
-class Player extends Node {
-    @export var max_health: Float = 50.0;
-    fn on_create() {
-        print(max_health);
-    }
-}
-"#;
-    let tokens = Lexer::new(src).tokenize().unwrap();
-    let program = Parser::new(tokens).parse().unwrap();
-    let mut ctx = EvalContext::new();
-    ctx.load_program(&program).unwrap();
-    let exports = list_exports(src);
-    let mut props = HashMap::new();
-    props.insert("max_health".into(), serde_json::json!(99.0));
-    ctx.apply_exports(&exports, &props);
-    ctx.call_hook("on_ready", vec![]).unwrap();
-    assert!(ctx.stdout.contains("99"), "stdout={}", ctx.stdout);
-}
-
-#[test]
-fn list_signals_and_emit_effect() {
+fn list_signals_and_emit() {
     let src = r#"
 signal collected(amount: Int);
 fn main(): Int {
@@ -2840,13 +2196,6 @@ fn main(): Int {
 
     let result = run_source(src);
     assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::Emit {
-            signal: "collected".into(),
-            args: vec![serde_json::json!(1)],
-        }]
-    );
 }
 
 #[test]
@@ -2882,13 +2231,6 @@ fn main(): Int {
 
     let result = run_source(src);
     assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::Emit {
-            signal: "died".into(),
-            args: vec![],
-        }]
-    );
 }
 
 #[test]
@@ -2983,13 +2325,6 @@ fn main(): Int {
     let mut ctx = EvalContext::with_resolver(resolver);
     ctx.load_program(&program).unwrap();
     ctx.call("main", vec![]).unwrap();
-    assert_eq!(
-        ctx.take_effects(),
-        vec![HostEffect::Emit {
-            signal: "died".into(),
-            args: vec![],
-        }]
-    );
 }
 
 #[test]
@@ -3028,86 +2363,13 @@ fn unknown_signal_emit_is_runtime_error() {
     assert!(err.message.contains("unknown signal"), "{}", err.message);
 }
 
-#[test]
-fn input_pressed_and_held_use_csv_tokens() {
-    let src = r#"
-import input;
-fn check(): Bool {
-    return input.pressed("Space") && input.held("ArrowRight") && !input.held("KeyA");
-}
-"#;
-    let tokens = Lexer::new(src).tokenize().unwrap();
-    let program = Parser::new(tokens).parse().unwrap();
-    let mut ctx = EvalContext::new();
-    ctx.load_program(&program).unwrap();
-    ctx.set_input("ArrowRight,Space", "Space");
-    assert_eq!(ctx.call("check", vec![]).unwrap(), Value::Bool(true));
-    ctx.set_input("ArrowRight,Space", "");
-    assert_eq!(ctx.call("check", vec![]).unwrap(), Value::Bool(false));
-}
 
-#[test]
-fn strata_after_is_a_host_effect() {
-    let result = run_source(
-        r#"
-import strata;
-fn main(): Int {
-    strata.after(0.5, "explode");
-    return 0;
-}
-"#,
-    );
-    assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
-    assert_eq!(
-        result.effects,
-        vec![HostEffect::After {
-            delay: 0.5,
-            method: "explode".into(),
-        }]
-    );
-}
 
-#[test]
-fn typecheck_input_and_after_arity() {
-    let diags = check_source(
-        r#"
-import input;
-import strata;
-fn main(): Int {
-    input.pressed();
-    strata.after(0.5);
-    return 0;
-}
-"#,
-        "t.rg",
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("input.pressed expected 1 args")),
-        "{diags:?}"
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("strata.after expected 2 args")),
-        "{diags:?}"
-    );
-}
 
-#[test]
-fn typecheck_unknown_input_fn() {
-    let diags = check_source(
-        "import input;\nfn main(): Int { return input.remap(\"Space\"); }\n",
-        "t.rg",
-    );
-    assert_eq!(diags.len(), 1, "{diags:?}");
-    assert!(
-        diags[0].message.contains("unknown function"),
-        "{:?}",
-        diags[0]
-    );
-}
+
+
+
+
 
 #[test]
 fn typecheck_io_arity_and_unknown() {
@@ -3163,13 +2425,7 @@ fn main(): Int {
     );
 }
 
-#[test]
-fn check_coin_spin_rg_is_clean() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/demo-project/scripts/CoinSpin.rg");
-    let diags = check_file(&path);
-    assert!(diags.is_empty(), "{diags:?}");
-}
+
 
 #[test]
 fn diagnostic_from_parser_message() {
@@ -3325,7 +2581,7 @@ fn main(): Int {
 /// Port of RoseGold-PY `examples/class/main.rg` (`class` + `trait` + crate `Vec2`).
 #[test]
 fn example_class() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/class_trait.rg");
+    let path = example("class_trait.rg");
     let result = run_file(&path);
     assert!(result.ok, "{}", result.stderr);
     assert!(result.stdout.contains("5"), "{}", result.stdout);

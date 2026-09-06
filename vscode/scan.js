@@ -1,10 +1,6 @@
-/** Regex/brace scan of a .rg buffer. Keep in lockstep with src/lib/rosegold-scan.ts. */
+/** Regex/brace scan of a .rg buffer for outline, locals, and test names. */
 
 const IDENT = "[A-Za-z_]\\w*";
-
-const NODE_BASES = ["Node", "Empty", "Sprite", "Tilemap", "Camera", "Mesh", "Light"];
-const NODE_FIELDS = ["name", "x", "y", "z"];
-const NODE_METHODS = ["on_create", "on_update", "on_destroy", "on_enter", "on_exit"];
 
 function maskNoise(src) {
   let out = "";
@@ -55,16 +51,6 @@ function findBody(masked, from) {
     }
   }
   return { start, end: masked.length };
-}
-
-function prevNonemptyLine(src, index) {
-  let i = index;
-  while (i > 0 && src[i - 1] !== "\n") i -= 1;
-  let end = i;
-  while (end > 0 && src[end - 1] === "\n") end -= 1;
-  let start = end;
-  while (start > 0 && src[start - 1] !== "\n") start -= 1;
-  return src.slice(start, end).trim();
 }
 
 function membersIn(masked, start, end, re) {
@@ -161,7 +147,7 @@ function scanSource(src) {
       masked,
       body.start,
       body.end,
-      /(?:^|[^A-Za-z0-9_])(?:@export(?:_group\s*\([^)]*\))?\s+)?(?:pub\s+)?var\s+([A-Za-z_]\w*)/g,
+      /(?:^|[^A-Za-z0-9_])(?:pub\s+)?var\s+([A-Za-z_]\w*)/g,
     ).filter((f) => !insideAny(f.from, methodBodies));
     classes.push({
       name,
@@ -173,9 +159,6 @@ function scanSource(src) {
         ...parseImpls(header),
         ...parseNestedImpls(masked, body.start, body.end),
       ]),
-      isNode:
-        prevNonemptyLine(masked, nameFrom) === "@node" ||
-        (extendsName != null && NODE_BASES.includes(extendsName)),
       fields,
       methods,
       signals: membersIn(
@@ -232,7 +215,7 @@ function scanSource(src) {
     ...top("fn", /(?:^|[^A-Za-z0-9_])(?:pub\s+)?fn\s+([A-Za-z_]\w*)/g),
     ...top(
       "var",
-      /(?:^|[^A-Za-z0-9_])(?:@export(?:_group\s*\([^)]*\))?\s+)?(?:pub\s+)?var\s+([A-Za-z_]\w*)/g,
+      /(?:^|[^A-Za-z0-9_])(?:pub\s+)?var\s+([A-Za-z_]\w*)/g,
     ),
     ...top("const", /(?:^|[^A-Za-z0-9_])(?:pub\s+)?const\s+([A-Za-z_]\w*)/g),
     ...top("struct", /(?:^|[^A-Za-z0-9_])(?:pub\s+)?struct\s+([A-Za-z_]\w*)/g),
@@ -272,10 +255,6 @@ function classAt(file, pos) {
     if (pos >= c.from && pos <= c.bodyTo) hit = c;
   }
   return hit;
-}
-
-function isNodeBase(name) {
-  return NODE_BASES.includes(name);
 }
 
 function findClass(files, name) {
@@ -318,10 +297,6 @@ function classMembers(cls, files, seen = new Set()) {
     for (const s of trait.signals) signals.push(s.name);
   }
   if (cls.extendsName) {
-    if (isNodeBase(cls.extendsName)) {
-      fields.push(...NODE_FIELDS);
-      methods.push(...NODE_METHODS);
-    } else {
       const parent = findClass(files, cls.extendsName);
       if (parent) {
         const up = classMembers(parent, files, seen);
@@ -329,10 +304,6 @@ function classMembers(cls, files, seen = new Set()) {
         methods.push(...up.methods);
         signals.push(...up.signals);
       }
-    }
-  } else if (cls.isNode) {
-    fields.push(...NODE_FIELDS);
-    methods.push(...NODE_METHODS);
   }
   return {
     fields: unique(fields),
@@ -342,8 +313,7 @@ function classMembers(cls, files, seen = new Set()) {
 }
 
 function parentMethods(cls, files) {
-  if (!cls.extendsName) return cls.isNode ? [...NODE_METHODS] : [];
-  if (isNodeBase(cls.extendsName)) return [...NODE_METHODS];
+  if (!cls.extendsName) return [];
   const parent = findClass(files, cls.extendsName);
   if (!parent) return [];
   return classMembers(parent, files).methods;
@@ -414,9 +384,6 @@ function membersFor(file, files, pos, receiver) {
 }
 
 module.exports = {
-  NODE_BASES,
-  NODE_FIELDS,
-  NODE_METHODS,
   scanSource,
   classAt,
   classMembers,

@@ -1,11 +1,9 @@
 //! RoseGold: lexer, parser, typecheck, and tree-walking interpreter.
 //!
-//! Hosts use [`compile_source`] / [`run_source`] / [`EvalContext`]. Editor
-//! metadata lives in [`export`], [`signal`], and [`navigate`].
+//! Use [`compile_source`] / [`run_source`] / [`EvalContext`]. Editor metadata
+//! lives in [`signal`] and [`navigate`].
 
-pub mod export;
 pub mod format;
-pub mod host;
 pub mod interpreter;
 pub mod lexer;
 pub mod navigate;
@@ -19,14 +17,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
-pub use export::{
-    ExportField, NodeClass, collect_exports, collect_nodes, list_exports, list_nodes,
-};
 pub use format::format_source;
-pub use host::{HostEffect, LabeledHostEffects};
 pub use interpreter::{
     CombinedResolver, EvalContext, FileModuleResolver, HashMapResolver, Module, ModuleResolver,
-    Value, WorldEntry,
+    Value,
 };
 pub use lexer::{Lexer, Token, TokenKind};
 pub use navigate::{SymbolInfo, def_at, hover_at, symbol_at};
@@ -261,7 +255,6 @@ pub struct RunResult {
     pub stdout: String,
     pub stderr: String,
     pub message: String,
-    pub effects: Vec<HostEffect>,
 }
 
 impl RunResult {
@@ -272,12 +265,11 @@ impl RunResult {
             stdout: String::new(),
             stderr: message.clone(),
             message,
-            effects: Vec::new(),
         }
     }
 }
 
-/// Lex, parse, and typecheck without evaluating. Hosts cache this across ticks.
+/// Lex, parse, and typecheck without evaluating.
 pub fn compile_source(source: &str) -> Result<Vec<Item>, String> {
     let tokens = Lexer::new(source).tokenize()?;
     let program = Parser::new(tokens).parse()?;
@@ -296,7 +288,6 @@ fn run_with_context(source: &str, ctx: &mut EvalContext) -> RunResult {
             stdout: ctx.stdout.clone(),
             stderr: String::new(),
             message: "RoseGold finished".to_string(),
-            effects: ctx.take_effects(),
         },
         Err(e) => {
             let msg = e.to_string();
@@ -305,7 +296,6 @@ fn run_with_context(source: &str, ctx: &mut EvalContext) -> RunResult {
                 stdout: ctx.stdout.clone(),
                 stderr: msg.clone(),
                 message: msg,
-                effects: ctx.take_effects(),
             }
         }
     }
@@ -320,69 +310,6 @@ pub fn run_source_with_modules(source: &str, modules: HashMap<String, String>) -
     let resolver = Rc::new(RefCell::new(HashMapResolver::new(modules)));
     let mut ctx = EvalContext::with_resolver(resolver);
     run_with_context(source, &mut ctx)
-}
-
-/// Script-tab Run: construct a `@node` / class with `on_ready`/`on_create`, or
-/// call a free `on_ready`. Does not require `main`.
-pub fn run_preview(source: &str, name: &str, x: f64, y: f64) -> RunResult {
-    run_preview_with(source, name, x, y, EvalContext::new())
-}
-
-pub fn run_preview_with_modules(
-    source: &str,
-    name: &str,
-    x: f64,
-    y: f64,
-    modules: HashMap<String, String>,
-) -> RunResult {
-    let resolver = Rc::new(RefCell::new(HashMapResolver::new(modules)));
-    run_preview_with(source, name, x, y, EvalContext::with_resolver(resolver))
-}
-
-fn run_preview_with(source: &str, name: &str, x: f64, y: f64, mut ctx: EvalContext) -> RunResult {
-    let program = match compile_source(source) {
-        Ok(program) => program,
-        Err(e) => return RunResult::fail(e),
-    };
-    if let Err(e) = ctx.load_program(&program) {
-        let msg = e.to_string();
-        return RunResult {
-            ok: false,
-            stdout: ctx.stdout.clone(),
-            stderr: msg.clone(),
-            message: msg,
-            effects: ctx.take_effects(),
-        };
-    }
-    if let Err(e) = ctx.adopt_preview_class(&program) {
-        let msg = e.to_string();
-        return RunResult {
-            ok: false,
-            stdout: ctx.stdout.clone(),
-            stderr: msg.clone(),
-            message: msg,
-            effects: ctx.take_effects(),
-        };
-    }
-    match ctx.run_ready_preview(name, x, y) {
-        Ok(_) => RunResult {
-            ok: true,
-            stdout: ctx.stdout.clone(),
-            stderr: String::new(),
-            message: "RoseGold finished".to_string(),
-            effects: ctx.take_effects(),
-        },
-        Err(e) => {
-            let msg = e.to_string();
-            RunResult {
-                ok: false,
-                stdout: ctx.stdout.clone(),
-                stderr: msg.clone(),
-                message: msg,
-                effects: ctx.take_effects(),
-            }
-        }
-    }
 }
 
 pub fn run_file(path: &Path) -> RunResult {
@@ -456,7 +383,6 @@ fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver
             stdout: String::new(),
             stderr: String::new(),
             message: "no @test functions".into(),
-            effects: Vec::new(),
         };
     }
 
@@ -468,7 +394,6 @@ fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver
             stdout: ctx.stdout.clone(),
             stderr: msg.clone(),
             message: msg,
-            effects: ctx.take_effects(),
         };
     }
 
@@ -499,7 +424,6 @@ fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver
             summary.clone()
         },
         message: summary,
-        effects: ctx.take_effects(),
     }
 }
 

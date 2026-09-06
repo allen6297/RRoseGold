@@ -1,4 +1,4 @@
-/** SE8 acceptance: node --test editors/vscode/scan.test.js */
+/** node --test vscode/scan.test.js */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const scan = require("./scan");
@@ -14,10 +14,13 @@ class Player impl Damageable {
     fn take_damage(damage: Float): Float {
         return 0.0;
     }
+    fn shout() {
+        pass;
+    }
 }
 
-class Slime extends Sprite {
-    fn on_update(dt: Float) {
+class Slime extends Player {
+    fn tick() {
         pass;
     }
 }
@@ -64,10 +67,10 @@ test("died. offers emit", () => {
   assert.deepEqual(hit.items.map((i) => i.name), ["emit"]);
 });
 
-test("extends offers node bases via NODE_BASES", () => {
-  assert.ok(scan.NODE_BASES.includes("Sprite"));
+test("extends offers local classes", () => {
   const file = scan.scanSource(SRC);
   assert.ok(scan.allClasses([file]).includes("Player"));
+  assert.ok(scan.allClasses([file]).includes("Slime"));
 });
 
 test("impl lists traits", () => {
@@ -84,13 +87,13 @@ test("nested impl Trait pulls trait members", () => {
   assert.ok(mem.signals.includes("died"));
 });
 
-test("super. on Sprite child lists node methods", () => {
+test("super. on subclass lists parent methods", () => {
   const file = scan.scanSource(SRC);
   const slime = file.classes.find((c) => c.name === "Slime");
-  const pos = SRC.indexOf("fn on_update");
+  const pos = SRC.indexOf("fn tick");
   const names = labels(scan.membersFor(file, [file], pos, "super"));
-  assert.ok(names.includes("on_update"));
-  assert.ok(names.includes("on_create"));
+  assert.ok(names.includes("shout"));
+  assert.ok(names.includes("take_damage"));
 });
 
 test("typed local p. offers Player members", () => {
@@ -101,11 +104,10 @@ test("typed local p. offers Player members", () => {
   assert.ok(names.includes("take_damage"));
 });
 
-test("self. on Sprite subclass includes x/y/z", () => {
+test("self. on subclass inherits parent fields", () => {
   const file = scan.scanSource(SRC);
   const slime = file.classes.find((c) => c.name === "Slime");
   const mem = scan.classMembers(slime, [file]);
-  assert.ok(mem.fields.includes("x"));
-  assert.ok(mem.fields.includes("name"));
-  assert.ok(mem.methods.includes("on_create"));
+  assert.ok(mem.fields.includes("current_health"));
+  assert.ok(mem.methods.includes("shout"));
 });

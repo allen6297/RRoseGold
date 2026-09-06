@@ -7,17 +7,11 @@ use super::ast::*;
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    /// Sticky `@export_group("…")` for following `@export var`s.
-    export_group: Option<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self {
-            tokens,
-            pos: 0,
-            export_group: None,
-        }
+        Self { tokens, pos: 0 }
     }
 
     fn peek(&self) -> &TokenKind {
@@ -132,8 +126,6 @@ impl Parser {
         }
         let mut is_test = false;
         let mut is_ufcs = false;
-        let mut is_node = false;
-        let mut exported = false;
         let mut is_pub = false;
         let mut doc_lines = Vec::new();
         loop {
@@ -148,16 +140,17 @@ impl Parser {
                 TokenKind::At => {
                     self.advance();
                     let attr = self.expect_ident("expected attribute name after '@'")?;
-                    let arg = self.parse_attr_arg();
+                    let _arg = self.parse_attr_arg();
                     match attr.as_str() {
                         "test" => is_test = true,
                         "ufcs" => is_ufcs = true,
-                        "node" => is_node = true,
-                        "export" => exported = true,
-                        "export_group" => {
-                            self.export_group = arg.filter(|s| !s.is_empty());
+                        other => {
+                            let t = &self.tokens[self.pos.saturating_sub(1)];
+                            return Err(format!(
+                                "unknown attribute '@{other}' at {}:{}",
+                                t.span.line, t.span.col
+                            ));
                         }
-                        _ => {}
                     }
                 }
                 TokenKind::Pub => {
@@ -184,12 +177,6 @@ impl Parser {
             }
             TokenKind::Var => {
                 let mut decl = self.parse_var_decl()?;
-                decl.exported = exported;
-                decl.export_group = if exported {
-                    self.export_group.clone()
-                } else {
-                    None
-                };
                 decl.doc = doc;
                 decl.is_pub = is_pub;
                 Ok(Item::VarDecl(decl))
@@ -210,7 +197,6 @@ impl Parser {
                 let mut decl = self.parse_class_decl()?;
                 decl.doc = doc;
                 decl.is_pub = is_pub;
-                decl.is_node = is_node;
                 Ok(Item::ClassDecl(decl))
             }
             TokenKind::Trait => {
@@ -446,7 +432,6 @@ impl Parser {
         let mut defaults = Vec::new();
         let mut methods = Vec::new();
         let mut trait_impls = Vec::new();
-        let mut exported_fields = Vec::new();
         loop {
             let leading = self.take_line_comments();
             if self.at(TokenKind::RBrace) || self.at(TokenKind::Eof) {
@@ -463,8 +448,6 @@ impl Parser {
                     doc: None,
                     span,
                     is_pub: false,
-                    is_node: false,
-                    exported_fields,
                 });
             }
             if self.only_docs_before(TokenKind::RBrace) {
@@ -482,12 +465,11 @@ impl Parser {
                     doc: None,
                     span,
                     is_pub: false,
-                    is_node: false,
-                    exported_fields,
                 });
             }
             let mut doc_lines = Vec::new();
-            let mut exported = false;
+            let mut is_ufcs = false;
+            let mut is_test = false;
             loop {
                 match self.peek() {
                     TokenKind::DocComment(text) => {
@@ -500,13 +482,17 @@ impl Parser {
                     TokenKind::At => {
                         self.advance();
                         let attr = self.expect_ident("expected attribute name after '@'")?;
-                        let arg = self.parse_attr_arg();
+                        let _arg = self.parse_attr_arg();
                         match attr.as_str() {
-                            "export" => exported = true,
-                            "export_group" => {
-                                self.export_group = arg.filter(|s| !s.is_empty());
+                            "test" => is_test = true,
+                            "ufcs" => is_ufcs = true,
+                            other => {
+                                let t = &self.tokens[self.pos.saturating_sub(1)];
+                                return Err(format!(
+                                    "unknown attribute '@{other}' at {}:{}",
+                                    t.span.line, t.span.col
+                                ));
                             }
-                            _ => {}
                         }
                     }
                     _ => break,
@@ -522,15 +508,6 @@ impl Parser {
                     let mut decl = self.parse_var_decl()?;
                     decl.doc = doc;
                     decl.leading = leading.clone();
-                    decl.exported = exported;
-                    decl.export_group = if exported {
-                        self.export_group.clone()
-                    } else {
-                        None
-                    };
-                    if exported {
-                        exported_fields.push(decl.clone());
-                    }
                     if let Some(value) = &decl.value {
                         defaults.push((decl.name.clone(), value.clone()));
                     }
@@ -544,6 +521,8 @@ impl Parser {
                     let mut decl = self.parse_fn_decl()?;
                     decl.doc = doc;
                     decl.leading = leading;
+                    decl.is_ufcs = is_ufcs;
+                    decl.is_test = is_test;
                     methods.push(decl);
                 }
                 TokenKind::Impl => {
@@ -909,8 +888,6 @@ impl Parser {
             name,
             ty,
             value,
-            exported: false,
-            export_group: None,
             doc: None,
             leading: Vec::new(),
             is_pub: false,

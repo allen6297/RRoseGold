@@ -30,7 +30,7 @@
       "patterns": [
         {
           "name": "meta.annotation.rosegold",
-          "match": "(@)(test|export|export_group|ufcs|node)\\b",
+          "match": "(@)(test|ufcs)\\b",
           "captures": {
             "1": { "name": "punctuation.definition.decorator.rosegold" },
             "2": { "name": "keyword.control.directive.rosegold" }
@@ -150,7 +150,7 @@
       "patterns": [
         {
           "name": "support.type.builtin.rosegold",
-          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Option|Result|Vec2|Vec3|Node|Empty|Sprite|Tilemap|Camera|Mesh|Light)\\b"
+          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Option|Result|Vec2|Vec3)\\b"
         },
         {
           "name": "entity.name.type.rosegold",

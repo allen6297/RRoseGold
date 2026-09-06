@@ -2,17 +2,17 @@
   "name": "rosegold",
   "displayName": "RoseGold",
   "description": "Language support for the RoseGold programming language",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "publisher": "rosegold",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/allen6297/strata.git"
+    "url": "https://github.com/allen6297/RRoseGold.git"
   },
   "bugs": {
-    "url": "https://github.com/allen6297/strata/issues"
+    "url": "https://github.com/allen6297/RRoseGold/issues"
   },
-  "homepage": "https://github.com/allen6297/strata#readme",
+  "homepage": "https://github.com/allen6297/RRoseGold#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -232,7 +232,8 @@
   },
   "scripts": {
     "package": "npx --yes @vscode/vsce package",
-    "vscode:prepublish": "echo ready"
+    "vscode:prepublish": "echo ready",
+    "test": "node --test scan.test.js"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.0"

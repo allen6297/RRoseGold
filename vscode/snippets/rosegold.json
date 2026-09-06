@@ -19,56 +19,6 @@
     ],
     "description": "Entry point fn main"
   },
-  "On ready": {
-    "prefix": "on_ready",
-    "body": [
-      "fn on_ready(name: String, x: Float, y: Float): Int {",
-      "\t$0",
-      "\treturn 0;",
-      "}"
-    ],
-    "description": "Entity spawn hook"
-  },
-  "On update": {
-    "prefix": "on_update",
-    "body": [
-      "fn on_update(name: String, x: Float, y: Float, dt: Float): Int {",
-      "\t$0",
-      "\treturn 0;",
-      "}"
-    ],
-    "description": "Per-frame entity hook (use input.pressed / input.held)"
-  },
-  "On enter": {
-    "prefix": "on_enter",
-    "body": [
-      "fn on_enter(other: String, x: Float, y: Float): Int {",
-      "\t$0",
-      "\treturn 0;",
-      "}"
-    ],
-    "description": "AABB overlap start"
-  },
-  "On exit": {
-    "prefix": "on_exit",
-    "body": [
-      "fn on_exit(other: String, x: Float, y: Float): Int {",
-      "\t$0",
-      "\treturn 0;",
-      "}"
-    ],
-    "description": "AABB overlap end"
-  },
-  "On destroy": {
-    "prefix": "on_destroy",
-    "body": [
-      "fn on_destroy(): Int {",
-      "\t$0",
-      "\treturn 0;",
-      "}"
-    ],
-    "description": "Entity removed hook"
-  },
   "Test": {
     "prefix": "@test",
     "body": [
@@ -88,20 +38,6 @@
       "}"
     ],
     "description": "Free function callable as a method"
-  },
-  "Export": {
-    "prefix": "@export",
-    "body": [
-      "@export var ${1:name}: ${2:Float} = ${3:0.0};"
-    ],
-    "description": "Inspector-exported variable"
-  },
-  "Export group": {
-    "prefix": "@export_group",
-    "body": [
-      "@export_group(\"${1:Name}\")"
-    ],
-    "description": "Inspector export group"
   },
   "Emit": {
     "prefix": "emit",
@@ -170,25 +106,6 @@
       "}"
     ],
     "description": "Class that extends a parent and implements traits"
-  },
-  "Node class": {
-    "prefix": ["nodeclass", "@node"],
-    "body": [
-      "import strata.${2:Sprite};",
-      "@node",
-      "class ${1:MyNode} extends ${2:Sprite} {",
-      "\tfn on_create() {",
-      "\t\t$0",
-      "\t}",
-      "\tfn on_update(dt: Float) {",
-      "\t\tpass;",
-      "\t}",
-      "\tfn on_destroy() {",
-      "\t\tpass;",
-      "\t}",
-      "}"
-    ],
-    "description": "Scene node class (@node)"
   },
   "Impl trait in class": {
     "prefix": "impltrait",
@@ -316,7 +233,7 @@
   "From Import": {
     "prefix": "from",
     "body": [
-      "from ${1:utils} import ${2:move_line};"
+      "from ${1:utils} import ${2:name};"
     ],
     "description": "From-import names"
   },

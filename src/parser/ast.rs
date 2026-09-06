@@ -69,10 +69,6 @@ pub struct ClassDecl {
     pub doc: Option<String>,
     pub span: crate::Span,
     pub is_pub: bool,
-    /// `@node` — this class is a scene node the editor can insert.
-    pub is_node: bool,
-    /// `@export var` fields in this class (Inspector).
-    pub exported_fields: Vec<VarDecl>,
 }
 
 impl ClassDecl {
@@ -98,7 +94,7 @@ impl ClassDecl {
 pub struct TraitDecl {
     pub name: String,
     pub methods: Vec<TraitMethod>,
-    /// `signal` contract: implementing types expose these to Inspector / `.emit`.
+    /// `signal` contract: implementing types expose these to `.emit`.
     pub signals: Vec<SignalDecl>,
     pub trailing: Vec<String>,
     pub doc: Option<String>,
@@ -191,8 +187,6 @@ pub struct VarDecl {
     pub name: String,
     pub ty: Type,
     pub value: Option<Expr>,
-    pub exported: bool,
-    pub export_group: Option<String>,
     pub doc: Option<String>,
     pub leading: Vec<String>,
     pub is_pub: bool,

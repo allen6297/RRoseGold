@@ -1,11 +1,10 @@
 //! Call dispatch: builtins, instance methods, UFCS, and host modules
-//! (`strata`, `input`, `io`, `time`, `ui`, `__math`, `__str`).
+//! (`io`, `time`, `__math`, `__str`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::host::HostEffect;
 use crate::{RuntimeError, Span};
 
 use super::ops::*;
@@ -133,11 +132,6 @@ impl super::eval::EvalContext {
                     span,
                 ));
             }
-            let args = _args.iter().map(value_to_json).collect();
-            self.effects.push(HostEffect::Emit {
-                signal: signal.clone(),
-                args,
-            });
             return Ok(Value::Void);
         }
         if name == "emit" {
@@ -722,26 +716,6 @@ impl super::eval::EvalContext {
                 }
                 Ok(Value::Float(self.started.elapsed_secs()))
             }
-            ("ui", "text") => {
-                if args.len() != 3 {
-                    return Err(runtime_err(
-                        "ui.text takes 3 arguments".to_string(),
-                        span,
-                    ));
-                }
-                let x = as_f64(&args[0]).ok_or_else(|| {
-                    runtime_err("ui.text expects numbers for x, y".to_string(), span)
-                })?;
-                let y = as_f64(&args[1]).ok_or_else(|| {
-                    runtime_err("ui.text expects numbers for x, y".to_string(), span)
-                })?;
-                let text = match &args[2] {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                self.effects.push(HostEffect::UiText { x, y, text });
-                Ok(Value::Void)
-            }
             ("Array", "first") => {
                 if args.len() != 1 {
                     return Err(runtime_err(
@@ -894,194 +868,6 @@ impl super::eval::EvalContext {
                     (Some(y), Some(x)) => Ok(Value::Float(y.atan2(x))),
                     _ => Err(runtime_err(
                         "__math.atan2 expects Int or Float".to_string(),
-                        span,
-                    )),
-                }
-            }
-            ("input", "pressed") => {
-                if args.len() != 1 {
-                    return Err(runtime_err(
-                        "input.pressed takes 1 argument".to_string(),
-                        span,
-                    ));
-                }
-                let code = match &args[0] {
-                    Value::String(s) => s.as_str(),
-                    _ => {
-                        return Err(runtime_err(
-                            "input.pressed expects a String key code".to_string(),
-                            span,
-                        ));
-                    }
-                };
-                Ok(Value::Bool(csv_has(&self.pressed, code)))
-            }
-            ("input", "held") => {
-                if args.len() != 1 {
-                    return Err(runtime_err("input.held takes 1 argument".to_string(), span));
-                }
-                let code = match &args[0] {
-                    Value::String(s) => s.as_str(),
-                    _ => {
-                        return Err(runtime_err(
-                            "input.held expects a String key code".to_string(),
-                            span,
-                        ));
-                    }
-                };
-                Ok(Value::Bool(csv_has(&self.keys, code)))
-            }
-            ("strata", "move") => {
-                if args.len() != 2 {
-                    return Err(runtime_err(
-                        "strata.move takes 2 arguments".to_string(),
-                        span,
-                    ));
-                }
-                let dx = as_f64(&args[0])
-                    .ok_or_else(|| runtime_err("strata.move expects numbers".to_string(), span))?;
-                let dy = as_f64(&args[1])
-                    .ok_or_else(|| runtime_err("strata.move expects numbers".to_string(), span))?;
-                self.effects.push(HostEffect::Move { dx, dy });
-                Ok(Value::Void)
-            }
-            ("strata", "rot") => {
-                if args.len() != 1 {
-                    return Err(runtime_err("strata.rot takes 1 argument".to_string(), span));
-                }
-                let degrees = as_f64(&args[0])
-                    .ok_or_else(|| runtime_err("strata.rot expects a number".to_string(), span))?;
-                self.effects.push(HostEffect::Rot { degrees });
-                Ok(Value::Void)
-            }
-            ("strata", "set") => {
-                if args.len() != 2 {
-                    return Err(runtime_err(
-                        "strata.set takes 2 arguments".to_string(),
-                        span,
-                    ));
-                }
-                let x = as_f64(&args[0])
-                    .ok_or_else(|| runtime_err("strata.set expects numbers".to_string(), span))?;
-                let y = as_f64(&args[1])
-                    .ok_or_else(|| runtime_err("strata.set expects numbers".to_string(), span))?;
-                self.effects.push(HostEffect::Set {
-                    x: Some(x),
-                    y: Some(y),
-                    rot: None,
-                });
-                Ok(Value::Void)
-            }
-            ("strata", "play_sound") => {
-                if args.len() != 1 {
-                    return Err(runtime_err(
-                        "strata.play_sound takes 1 argument".to_string(),
-                        span,
-                    ));
-                }
-                let name = match &args[0] {
-                    Value::String(s) => s.clone(),
-                    _ => {
-                        return Err(runtime_err(
-                            "strata.play_sound expects a String".to_string(),
-                            span,
-                        ));
-                    }
-                };
-                self.effects
-                    .push(HostEffect::PlaySound { name: Some(name) });
-                Ok(Value::Void)
-            }
-            ("strata", "destroy") => {
-                if args.len() > 1 {
-                    return Err(runtime_err(
-                        "strata.destroy takes 0 or 1 arguments".to_string(),
-                        span,
-                    ));
-                }
-                let name = match args.first() {
-                    None => None,
-                    Some(Value::String(s)) => Some(s.clone()),
-                    Some(_) => {
-                        return Err(runtime_err(
-                            "strata.destroy expects a String".to_string(),
-                            span,
-                        ));
-                    }
-                };
-                self.effects.push(HostEffect::Destroy { name });
-                Ok(Value::Void)
-            }
-            ("strata", "find") => {
-                if args.len() > 1 {
-                    return Err(runtime_err(
-                        "strata.find takes 0 or 1 arguments".to_string(),
-                        span,
-                    ));
-                }
-                match args.first() {
-                    None => Ok(self.find_nearest()),
-                    Some(Value::String(name)) => Ok(self.find_by_name(name)),
-                    Some(_) => Err(runtime_err(
-                        "strata.find expects a String name".to_string(),
-                        span,
-                    )),
-                }
-            }
-            ("strata", "after") => {
-                if args.len() != 2 {
-                    return Err(runtime_err(
-                        "strata.after takes 2 arguments".to_string(),
-                        span,
-                    ));
-                }
-                let delay = as_f64(&args[0]).ok_or_else(|| {
-                    runtime_err("strata.after expects a number delay".to_string(), span)
-                })?;
-                let method = match &args[1] {
-                    Value::String(s) => s.clone(),
-                    _ => {
-                        return Err(runtime_err(
-                            "strata.after expects a String method name".to_string(),
-                            span,
-                        ));
-                    }
-                };
-                self.effects.push(HostEffect::After { delay, method });
-                Ok(Value::Void)
-            }
-            ("strata", "spawn") => {
-                if args.len() != 1 {
-                    return Err(runtime_err(
-                        "strata.spawn takes 1 argument".to_string(),
-                        span,
-                    ));
-                }
-                match &args[0] {
-                    Value::String(name) => {
-                        self.effects.push(HostEffect::SpawnPrefab {
-                            prefab: name.clone(),
-                            x: None,
-                            y: None,
-                        });
-                        Ok(Value::Void)
-                    }
-                    Value::Map(m) => {
-                        let map = m.borrow();
-                        if let Some(prefab) = map_string(&map, "prefab") {
-                            self.effects.push(HostEffect::SpawnPrefab {
-                                prefab,
-                                x: map_f64(&map, "x"),
-                                y: map_f64(&map, "y"),
-                            });
-                            Ok(Value::Void)
-                        } else {
-                            self.effects.push(spawn_from_map(&map));
-                            Ok(Value::Void)
-                        }
-                    }
-                    _ => Err(runtime_err(
-                        "strata.spawn expects a prefab name or a Map".to_string(),
                         span,
                     )),
                 }

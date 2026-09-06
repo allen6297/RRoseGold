@@ -6,6 +6,6 @@ mod ops;
 mod resolver;
 mod value;
 
-pub use eval::{Environment, EvalContext, WorldEntry};
+pub use eval::{Environment, EvalContext};
 pub use resolver::{CombinedResolver, FileModuleResolver, HashMapResolver, ModuleResolver};
 pub use value::{EnumDef, EnumVariantDef, Module, StructDef, Value};
