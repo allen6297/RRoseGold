@@ -1,0 +1,240 @@
+{
+  "name": "rosegold",
+  "displayName": "RoseGold",
+  "description": "Language support for the RoseGold programming language",
+  "version": "0.6.3",
+  "publisher": "rosegold",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/allen6297/strata.git"
+  },
+  "bugs": {
+    "url": "https://github.com/allen6297/strata/issues"
+  },
+  "homepage": "https://github.com/allen6297/strata#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Testing"
+  ],
+  "keywords": [
+    "rosegold",
+    "rg",
+    "language"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "workspaceContains:**/*.rg"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rosegold",
+        "aliases": [
+          "RoseGold",
+          "rosegold"
+        ],
+        "extensions": [
+          ".rg"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/rosegold-light.svg",
+          "dark": "./icons/rosegold.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rosegold",
+        "scopeName": "source.rosegold",
+        "path": "./syntaxes/rosegold.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rosegold",
+        "path": "./snippets/rosegold.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "rosegold.runFile",
+        "title": "RoseGold: Run File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rosegold.testFile",
+        "title": "RoseGold: Run Tests",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "rosegold.testFolder",
+        "title": "RoseGold: Run Tests in Folder",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "rosegold.showStatus",
+        "title": "RoseGold: Show CLI Status"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "rosegold.runFile",
+          "when": "resourceLangId == rosegold",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rosegold.testFile",
+          "when": "resourceLangId == rosegold",
+          "group": "navigation@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "rosegold.testFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "rosegold@1"
+        },
+        {
+          "command": "rosegold.testFile",
+          "when": "resourceExtname == .rg",
+          "group": "rosegold@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rosegold.runFile",
+          "when": "resourceLangId == rosegold"
+        },
+        {
+          "command": "rosegold.testFile",
+          "when": "resourceLangId == rosegold"
+        },
+        {
+          "command": "rosegold.testFolder"
+        },
+        {
+          "command": "rosegold.showStatus"
+        }
+      ]
+    },
+    "taskDefinitions": [
+      {
+        "type": "rosegold",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "run | test | test-all"
+          },
+          "file": {
+            "type": "string",
+            "description": "Optional .rg file or folder"
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "rosegold",
+        "owner": "rosegold",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      }
+    ],
+    "configuration": {
+      "title": "RoseGold",
+      "properties": {
+        "rosegold.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the Rust `rosegold` binary. Empty = target/debug or target/release in the workspace, then PATH."
+        },
+        "rosegold.diagnosticsDelayMs": {
+          "type": "number",
+          "default": 400,
+          "minimum": 0,
+          "description": "Debounce delay before refreshing diagnostics while typing."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": [
+              "punctuation.definition.decorator.rosegold",
+              "keyword.control.directive.rosegold",
+              "entity.name.function.decorator.rosegold"
+            ],
+            "settings": {
+              "foreground": "#E8A0BF",
+              "fontStyle": "bold"
+            }
+          },
+          {
+            "scope": "meta.annotation.rosegold",
+            "settings": {
+              "foreground": "#E8A0BF"
+            }
+          },
+          {
+            "scope": [
+              "support.type.builtin.rosegold",
+              "entity.name.type.rosegold"
+            ],
+            "settings": {
+              "foreground": "#7DD3FC"
+            }
+          },
+          {
+            "scope": [
+              "storage.type.rosegold",
+              "storage.type.function.rosegold",
+              "storage.modifier.rosegold"
+            ],
+            "settings": {
+              "foreground": "#F0B27A"
+            }
+          },
+          {
+            "scope": "keyword.control.rosegold",
+            "settings": {
+              "foreground": "#C4B5FD"
+            }
+          },
+          {
+            "scope": "entity.name.function.rosegold",
+            "settings": {
+              "foreground": "#F5D0A9"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce package",
+    "vscode:prepublish": "echo ready"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.0"
+  }
+}

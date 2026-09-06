@@ -1,0 +1,892 @@
+[
+  {
+    "key": "strata",
+    "label": "strata",
+    "detail": "host",
+    "signature": "import strata",
+    "doc": "Ask the engine to change the world. Requires `import strata;`. Scripts queue effects; they do not own the entity list.",
+    "kind": "module"
+  },
+  {
+    "key": "strata.move",
+    "label": "move",
+    "detail": "(dx, dy)",
+    "signature": "strata.move(dx: Float, dy: Float)",
+    "doc": "Nudge this entity in world pixels this frame. Positive Y is down.",
+    "kind": "function",
+    "template": "move(${dx}, ${dy})",
+    "params": ["dx", "dy"]
+  },
+  {
+    "key": "strata.rot",
+    "label": "rot",
+    "detail": "(degrees)",
+    "signature": "strata.rot(degrees: Float)",
+    "doc": "Add to this entity’s rotation, in degrees.",
+    "kind": "function",
+    "template": "rot(${degrees})",
+    "params": ["degrees"]
+  },
+  {
+    "key": "strata.set",
+    "label": "set",
+    "detail": "(x, y)",
+    "signature": "strata.set(x: Float, y: Float)",
+    "doc": "Set this entity’s world position. Unlike move, this is absolute, not a delta.",
+    "kind": "function",
+    "template": "set(${x}, ${y})",
+    "params": ["x", "y"]
+  },
+  {
+    "key": "strata.spawn",
+    "label": "spawn",
+    "detail": "(prefab | spec)",
+    "signature": "strata.spawn(prefab: String | Map)",
+    "doc": "Clone a scene prefab (`\"Orb\"` or `{ \"prefab\", \"x\", \"y\" }`) or spawn a new entity from a spec map (`name`, `x`, `y`, optional `kind` / `w` / `h` / `color` / `script`).",
+    "kind": "function",
+    "template": "spawn({ \"prefab\": \"${name}\", \"x\": ${x}, \"y\": ${y} })",
+    "params": ["prefab"]
+  },
+  {
+    "key": "strata.destroy",
+    "label": "destroy",
+    "detail": "(name)",
+    "signature": "strata.destroy(name?: String)",
+    "doc": "Remove an entity by scene name, or this entity when called with no args.",
+    "kind": "function",
+    "template": "destroy()",
+    "params": []
+  },
+  {
+    "key": "strata.play_sound",
+    "label": "play_sound",
+    "detail": "(clip)",
+    "signature": "strata.play_sound(name: String)",
+    "doc": "Play an audio clip by asset name (for example \"jump.wav\"). Play looks the name up in the project audio library. A missing clip logs [audio not found …] when that library is non-empty.",
+    "kind": "function",
+    "template": "play_sound(\"${clip}\")",
+    "params": ["clip"]
+  },
+  {
+    "key": "strata.after",
+    "label": "after",
+    "detail": "(delay, method)",
+    "signature": "strata.after(delay: Float, method: String)",
+    "doc": "Call `method` on this entity once after `delay` seconds. No async or await.",
+    "kind": "function",
+    "template": "after(${delay}, \"${method}\")",
+    "params": ["delay", "method"]
+  },
+  {
+    "key": "strata.find",
+    "label": "find",
+    "detail": "(name?)",
+    "signature": "strata.find(name?: String): String | none",
+    "doc": "Look up a scene entity by exact name, or with no args return the nearest other entity's name. Returns none if nothing matches. Not a query language.",
+    "kind": "function",
+    "template": "find(\"${name}\")",
+    "params": ["name"]
+  },
+  {
+    "key": "input",
+    "label": "input",
+    "detail": "host",
+    "signature": "import input",
+    "doc": "Keyboard state for this Play tick. Requires `import input;`. Prefer `input.pressed` / `input.held` over CSV `keys` / `pressed` hook args.",
+    "kind": "module"
+  },
+  {
+    "key": "input.pressed",
+    "label": "pressed",
+    "detail": "(code)",
+    "signature": "input.pressed(code: String): Bool",
+    "doc": "True once when that key goes down this frame (`\"Space\"`, `\"KeyQ\"`, `\"ArrowRight\"`, …). Holding does not retrigger.",
+    "kind": "function",
+    "template": "pressed(\"${code}\")",
+    "params": ["code"]
+  },
+  {
+    "key": "input.held",
+    "label": "held",
+    "detail": "(code)",
+    "signature": "input.held(code: String): Bool",
+    "doc": "True while that key is down this frame. Use for movement.",
+    "kind": "function",
+    "template": "held(\"${code}\")",
+    "params": ["code"]
+  },
+  {
+    "key": "str",
+    "label": "str",
+    "detail": "stdlib",
+    "signature": "import str",
+    "doc": "String helpers. Requires `import str;`. Pass the string as the first argument (`str.contains(keys, \"KeyA\")`).",
+    "kind": "module"
+  },
+  {
+    "key": "str.contains",
+    "label": "contains",
+    "detail": "(s, sub)",
+    "signature": "str.contains(s: String, sub: String): Bool",
+    "doc": "True when `s` contains `sub`. For Play input, prefer `input.held` / `input.pressed`.",
+    "kind": "function",
+    "template": "contains(${s}, ${sub})",
+    "params": ["s", "sub"]
+  },
+  {
+    "key": "str.starts_with",
+    "label": "starts_with",
+    "detail": "(s, prefix)",
+    "signature": "str.starts_with(s: String, prefix: String): Bool",
+    "doc": "True when `s` begins with `prefix`.",
+    "kind": "function",
+    "template": "starts_with(${s}, ${prefix})",
+    "params": ["s", "prefix"]
+  },
+  {
+    "key": "str.ends_with",
+    "label": "ends_with",
+    "detail": "(s, suffix)",
+    "signature": "str.ends_with(s: String, suffix: String): Bool",
+    "doc": "True when `s` ends with `suffix`.",
+    "kind": "function",
+    "template": "ends_with(${s}, ${suffix})",
+    "params": ["s", "suffix"]
+  },
+  {
+    "key": "str.repeat",
+    "label": "repeat",
+    "detail": "(s, n)",
+    "signature": "str.repeat(s: String, n: Int): String",
+    "doc": "Repeat `s` `n` times.",
+    "kind": "function",
+    "template": "repeat(${s}, ${n})",
+    "params": ["s", "n"]
+  },
+  {
+    "key": "str.length",
+    "label": "length",
+    "detail": "(s)",
+    "signature": "str.length(s: String): Int",
+    "doc": "Character length of `s`.",
+    "kind": "function",
+    "template": "length(${s})",
+    "params": ["s"]
+  },
+  {
+    "key": "str.is_empty",
+    "label": "is_empty",
+    "detail": "(s)",
+    "signature": "str.is_empty(s: String): Bool",
+    "doc": "True when `s` has length 0.",
+    "kind": "function",
+    "template": "is_empty(${s})",
+    "params": ["s"]
+  },
+  {
+    "key": "str.upper",
+    "label": "upper",
+    "detail": "(s)",
+    "signature": "str.upper(s: String): String",
+    "doc": "Uppercase copy of `s`.",
+    "kind": "function",
+    "template": "upper(${s})",
+    "params": ["s"]
+  },
+  {
+    "key": "str.lower",
+    "label": "lower",
+    "detail": "(s)",
+    "signature": "str.lower(s: String): String",
+    "doc": "Lowercase copy of `s`.",
+    "kind": "function",
+    "template": "lower(${s})",
+    "params": ["s"]
+  },
+  {
+    "key": "str.trim",
+    "label": "trim",
+    "detail": "(s)",
+    "signature": "str.trim(s: String): String",
+    "doc": "Strip leading and trailing whitespace.",
+    "kind": "function",
+    "template": "trim(${s})",
+    "params": ["s"]
+  },
+  {
+    "key": "str.split",
+    "label": "split",
+    "detail": "(s, sep)",
+    "signature": "str.split(s: String, sep: String): Array",
+    "doc": "Split `s` on `sep`. An empty separator returns a one-element array with `s`.",
+    "kind": "function",
+    "template": "split(${s}, \"${sep}\")",
+    "params": ["s", "sep"]
+  },
+  {
+    "key": "str.slice",
+    "label": "slice",
+    "detail": "(s, start, end)",
+    "signature": "str.slice(s: String, start: Int, end: Int): String",
+    "doc": "Substring from `start` up to `end` (half-open, character indices, clamped).",
+    "kind": "function",
+    "template": "slice(${s}, ${start}, ${end})",
+    "params": ["s", "start", "end"]
+  },
+  {
+    "key": "math",
+    "label": "math",
+    "detail": "stdlib",
+    "signature": "import math",
+    "doc": "Numeric helpers (`abs`, `sin`, `clamp`, …). Requires `import math;`. Trig uses radians. `Vec2` is a crate class, not this module.",
+    "kind": "module"
+  },
+  {
+    "key": "Vec2",
+    "label": "Vec2",
+    "detail": "class",
+    "signature": "class Vec2 { var x: Float; var y: Float }",
+    "doc": "Crate 2D vector. Construct with `Vec2 { x, y }`. Methods: `length()`, `add(other)`. Always in scope.",
+    "kind": "type"
+  },
+  {
+    "key": "Vec3",
+    "label": "Vec3",
+    "detail": "class",
+    "signature": "class Vec3 extends Vec2 { var x: Float; var y: Float; var z: Float }",
+    "doc": "Crate 3D vector. Construct with `Vec3 { x, y, z }`. Methods: `length()`, `add(other)`. Always in scope.",
+    "kind": "type"
+  },
+  {
+    "key": "node",
+    "label": "node",
+    "detail": "stdlib",
+    "signature": "import strata.Node",
+    "doc": "Scene node base (`Node`, `Empty`, `Sprite`, …). Import the type before `extends` (`import strata.Sprite;`). `@node class Foo extends Sprite` inherits transform + lifecycle hooks.",
+    "kind": "module"
+  },
+  {
+    "key": "Node",
+    "label": "Node",
+    "detail": "class",
+    "signature": "class Node { var name: String; var x: Float; var y: Float; var z: Float; fn on_create(self); fn on_update(self, dt: Float); … }",
+    "doc": "Transform only. Parent other nodes. Same kind as Empty. Lifecycle: `on_create`, `on_update(self, dt)`, `on_destroy`, `on_enter` / `on_exit`.",
+    "kind": "type"
+  },
+  {
+    "key": "Empty",
+    "label": "Empty",
+    "detail": "class",
+    "signature": "class Empty extends Node",
+    "doc": "Transform only. Parent other nodes.",
+    "kind": "type"
+  },
+  {
+    "key": "Sprite",
+    "label": "Sprite",
+    "detail": "class",
+    "signature": "class Sprite extends Node",
+    "doc": "Textured quad. Draw and collide. Typical `@node` parent.",
+    "kind": "type"
+  },
+  {
+    "key": "Tilemap",
+    "label": "Tilemap",
+    "detail": "class",
+    "signature": "class Tilemap extends Node",
+    "doc": "Paint a grid. Solid cells are walls.",
+    "kind": "type"
+  },
+  {
+    "key": "Camera",
+    "label": "Camera",
+    "detail": "class",
+    "signature": "class Camera extends Node",
+    "doc": "Play follow and view frustum.",
+    "kind": "type"
+  },
+  {
+    "key": "Mesh",
+    "label": "Mesh",
+    "detail": "class",
+    "signature": "class Mesh extends Node",
+    "doc": "3D primitive in the editor viewport.",
+    "kind": "type"
+  },
+  {
+    "key": "Light",
+    "label": "Light",
+    "detail": "class",
+    "signature": "class Light extends Node",
+    "doc": "3D light in the editor viewport.",
+    "kind": "type"
+  },
+  {
+    "key": "option",
+    "label": "option",
+    "detail": "stdlib",
+    "signature": "from option import Option",
+    "doc": "Crate Option type (`Some` / `None`). Methods: `is_some()`, `is_none()`, `unwrap_or(fallback)`.",
+    "kind": "module"
+  },
+  {
+    "key": "Option",
+    "label": "Option",
+    "detail": "enum",
+    "signature": "enum Option { Some(T), None }",
+    "doc": "Present or missing value. Construct with `Some(v)` or `None`. Match on `Some(_)` / `None`.",
+    "kind": "type"
+  },
+  {
+    "key": "result",
+    "label": "result",
+    "detail": "stdlib",
+    "signature": "from result import Result",
+    "doc": "Crate Result type (`Ok` / `Err`). Methods: `is_ok()`, `is_err()`, `unwrap_or(fallback)`.",
+    "kind": "module"
+  },
+  {
+    "key": "Result",
+    "label": "Result",
+    "detail": "enum",
+    "signature": "enum Result { Ok(T), Err(E) }",
+    "doc": "Success or failure. Construct with `Ok(v)` or `Err(e)`. Match on `Ok(_)` / `Err(_)`.",
+    "kind": "type"
+  },
+  {
+    "key": "math.abs",
+    "label": "abs",
+    "detail": "(n)",
+    "signature": "math.abs(n): Number",
+    "doc": "Absolute value.",
+    "kind": "function",
+    "template": "abs(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.sqrt",
+    "label": "sqrt",
+    "detail": "(n)",
+    "signature": "math.sqrt(n: Float): Float",
+    "doc": "Square root.",
+    "kind": "function",
+    "template": "sqrt(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.sin",
+    "label": "sin",
+    "detail": "(n)",
+    "signature": "math.sin(n: Float): Float",
+    "doc": "Sine of `n` radians.",
+    "kind": "function",
+    "template": "sin(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.cos",
+    "label": "cos",
+    "detail": "(n)",
+    "signature": "math.cos(n: Float): Float",
+    "doc": "Cosine of `n` radians.",
+    "kind": "function",
+    "template": "cos(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.atan2",
+    "label": "atan2",
+    "detail": "(y, x)",
+    "signature": "math.atan2(y: Float, x: Float): Float",
+    "doc": "Two-argument arctangent, in radians.",
+    "kind": "function",
+    "template": "atan2(${y}, ${x})",
+    "params": ["y", "x"]
+  },
+  {
+    "key": "math.min",
+    "label": "min",
+    "detail": "(a, b)",
+    "signature": "math.min(a, b)",
+    "doc": "Smaller of two numbers.",
+    "kind": "function",
+    "template": "min(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "math.max",
+    "label": "max",
+    "detail": "(a, b)",
+    "signature": "math.max(a, b)",
+    "doc": "Larger of two numbers.",
+    "kind": "function",
+    "template": "max(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "math.clamp",
+    "label": "clamp",
+    "detail": "(n, lo, hi)",
+    "signature": "math.clamp(n, lo, hi)",
+    "doc": "Clamp `n` to `[lo, hi]`.",
+    "kind": "function",
+    "template": "clamp(${n}, ${lo}, ${hi})",
+    "params": ["n", "lo", "hi"]
+  },
+  {
+    "key": "math.pow",
+    "label": "pow",
+    "detail": "(a, b)",
+    "signature": "math.pow(a, b)",
+    "doc": "`a` raised to `b`.",
+    "kind": "function",
+    "template": "pow(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "math.sign",
+    "label": "sign",
+    "detail": "(n)",
+    "signature": "math.sign(n)",
+    "doc": "-1, 0, or 1.",
+    "kind": "function",
+    "template": "sign(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.lerp",
+    "label": "lerp",
+    "detail": "(a, b, t)",
+    "signature": "math.lerp(a, b, t): Float",
+    "doc": "Linear interpolate from `a` to `b` by `t` (not clamped).",
+    "kind": "function",
+    "template": "lerp(${a}, ${b}, ${t})",
+    "params": ["a", "b", "t"]
+  },
+  {
+    "key": "math.move_toward",
+    "label": "move_toward",
+    "detail": "(current, target, delta)",
+    "signature": "math.move_toward(current, target, delta): Float",
+    "doc": "Move `current` toward `target` by at most `delta`.",
+    "kind": "function",
+    "template": "move_toward(${current}, ${target}, ${delta})",
+    "params": ["current", "target", "delta"]
+  },
+  {
+    "key": "math.to_int",
+    "label": "to_int",
+    "detail": "(n)",
+    "signature": "math.to_int(n: Float): Int",
+    "doc": "Truncate `n` toward zero.",
+    "kind": "function",
+    "template": "to_int(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.to_float",
+    "label": "to_float",
+    "detail": "(n)",
+    "signature": "math.to_float(n: Int): Float",
+    "doc": "Convert an int to a float.",
+    "kind": "function",
+    "template": "to_float(${n})",
+    "params": ["n"]
+  },
+  {
+    "key": "math.gcd",
+    "label": "gcd",
+    "detail": "(a, b)",
+    "signature": "math.gcd(a: Int, b: Int): Int",
+    "doc": "Greatest common divisor of `a` and `b`.",
+    "kind": "function",
+    "template": "gcd(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "io",
+    "label": "io",
+    "detail": "stdlib",
+    "signature": "import io",
+    "doc": "Read, write, append, remove text files, and list or create directories. Desktop uses the host disk. WASM Play uses an in-memory VFS (not the host disk).",
+    "kind": "module"
+  },
+  {
+    "key": "io.read_text",
+    "label": "read_text",
+    "detail": "(path)",
+    "signature": "io.read_text(path: String): Result",
+    "doc": "Read a UTF-8 file as Result.Ok(String). Missing or unreadable paths return Result.Err. On WASM this is the Play-session VFS, not the host disk.",
+    "kind": "function",
+    "template": "read_text(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "io.exists",
+    "label": "exists",
+    "detail": "(path)",
+    "signature": "io.exists(path: String): Bool",
+    "doc": "True if that path exists (host disk on desktop; in-memory VFS on WASM).",
+    "kind": "function",
+    "template": "exists(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "io.write_text",
+    "label": "write_text",
+    "detail": "(path, text)",
+    "signature": "io.write_text(path: String, text: String): Result",
+    "doc": "Overwrite a UTF-8 file. Creates the file if it is missing. On WASM this is the Play-session VFS, not the host disk.",
+    "kind": "function",
+    "template": "write_text(${path}, ${text})",
+    "params": ["path", "text"]
+  },
+  {
+    "key": "io.append_text",
+    "label": "append_text",
+    "detail": "(path, text)",
+    "signature": "io.append_text(path: String, text: String): Result",
+    "doc": "Append UTF-8 text. Creates the file if it is missing. On WASM this is the Play-session VFS, not the host disk.",
+    "kind": "function",
+    "template": "append_text(${path}, ${text})",
+    "params": ["path", "text"]
+  },
+  {
+    "key": "io.read_lines",
+    "label": "read_lines",
+    "detail": "(path)",
+    "signature": "io.read_lines(path: String): Result",
+    "doc": "Read a UTF-8 file as Result.Ok(Array) of lines (no trailing newlines). Missing or unreadable paths return Result.Err.",
+    "kind": "function",
+    "template": "read_lines(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "io.remove",
+    "label": "remove",
+    "detail": "(path)",
+    "signature": "io.remove(path: String): Result",
+    "doc": "Delete a file. Returns Result.Err if the path is missing. On WASM this is the Play-session VFS, not the host disk.",
+    "kind": "function",
+    "template": "remove(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "io.mkdir",
+    "label": "mkdir",
+    "detail": "(path)",
+    "signature": "io.mkdir(path: String): Result",
+    "doc": "Create a directory and any missing parents. Returns Result.Ok if it already exists. On WASM this is the Play-session VFS, not the host disk.",
+    "kind": "function",
+    "template": "mkdir(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "io.list_dir",
+    "label": "list_dir",
+    "detail": "(path)",
+    "signature": "io.list_dir(path: String): Result",
+    "doc": "List a directory as Result.Ok(Array) of names (not full paths). Missing or non-directory paths return Result.Err.",
+    "kind": "function",
+    "template": "list_dir(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "io.is_dir",
+    "label": "is_dir",
+    "detail": "(path)",
+    "signature": "io.is_dir(path: String): Bool",
+    "doc": "True if that path is a directory (host disk on desktop; in-memory VFS on WASM).",
+    "kind": "function",
+    "template": "is_dir(${path})",
+    "params": ["path"]
+  },
+  {
+    "key": "time",
+    "label": "time",
+    "detail": "host",
+    "signature": "import time",
+    "doc": "Wall-clock and VM elapsed time. Requires `import time;`. This is not frame `dt` from `on_update`.",
+    "kind": "module"
+  },
+  {
+    "key": "time.now",
+    "label": "now",
+    "detail": "()",
+    "signature": "time.now(): Float",
+    "doc": "Unix time in seconds (fractional). Wall clock, not frame delta.",
+    "kind": "function",
+    "template": "now()",
+    "params": []
+  },
+  {
+    "key": "time.elapsed",
+    "label": "elapsed",
+    "detail": "()",
+    "signature": "time.elapsed(): Float",
+    "doc": "Seconds since this script VM started. Use instead of accumulating `dt`. Not wall-clock; see `time.now`.",
+    "kind": "function",
+    "template": "elapsed()",
+    "params": []
+  },
+  {
+    "key": "ui",
+    "label": "ui",
+    "detail": "host",
+    "signature": "import ui",
+    "doc": "Screen-space play HUD. Call every on_update; the list is rebuilt each frame. Requires `import ui;`.",
+    "kind": "module"
+  },
+  {
+    "key": "ui.text",
+    "label": "text",
+    "detail": "(x, y, text)",
+    "signature": "ui.text(x: Float, y: Float, text: Str)",
+    "doc": "Draw text this frame in viewport pixels. Origin is the top-left of the play view, not world space.",
+    "kind": "function",
+    "template": "text(${x}, ${y}, ${text})",
+    "params": ["x", "y", "text"]
+  },
+  {
+    "key": "checks",
+    "label": "checks",
+    "detail": "stdlib",
+    "signature": "import checks",
+    "doc": "Assertion helpers for `@test` functions.",
+    "kind": "module"
+  },
+  {
+    "key": "checks.that",
+    "label": "that",
+    "detail": "(value)",
+    "signature": "checks.that(value)",
+    "doc": "Assert `value` is true.",
+    "kind": "function",
+    "template": "that(${value})",
+    "params": ["value"]
+  },
+  {
+    "key": "checks.truthy",
+    "label": "truthy",
+    "detail": "(value)",
+    "signature": "checks.truthy(value)",
+    "doc": "Assert `value` is true.",
+    "kind": "function",
+    "template": "truthy(${value})",
+    "params": ["value"]
+  },
+  {
+    "key": "checks.falsey",
+    "label": "falsey",
+    "detail": "(value)",
+    "signature": "checks.falsey(value)",
+    "doc": "Assert `value` is false.",
+    "kind": "function",
+    "template": "falsey(${value})",
+    "params": ["value"]
+  },
+  {
+    "key": "checks.eq",
+    "label": "eq",
+    "detail": "(a, b)",
+    "signature": "checks.eq(a, b)",
+    "doc": "Assert `a` equals `b`.",
+    "kind": "function",
+    "template": "eq(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "checks.neq",
+    "label": "neq",
+    "detail": "(a, b)",
+    "signature": "checks.neq(a, b)",
+    "doc": "Assert `a` is not equal to `b`.",
+    "kind": "function",
+    "template": "neq(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "checks.eq_bool",
+    "label": "eq_bool",
+    "detail": "(a, b)",
+    "signature": "checks.eq_bool(a, b)",
+    "doc": "Assert two bools are equal.",
+    "kind": "function",
+    "template": "eq_bool(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "checks.eq_float",
+    "label": "eq_float",
+    "detail": "(a, b)",
+    "signature": "checks.eq_float(a, b)",
+    "doc": "Assert two floats are equal.",
+    "kind": "function",
+    "template": "eq_float(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "checks.eq_string",
+    "label": "eq_string",
+    "detail": "(a, b)",
+    "signature": "checks.eq_string(a, b)",
+    "doc": "Assert two strings are equal.",
+    "kind": "function",
+    "template": "eq_string(${a}, ${b})",
+    "params": ["a", "b"]
+  },
+  {
+    "key": "on_ready",
+    "label": "on_ready",
+    "detail": "entity hook",
+    "signature": "fn on_ready(name: String, x: Float, y: Float): Int",
+    "doc": "Called once when Play starts, after the entity is in the world. Return 0.",
+    "kind": "hook",
+    "template": "fn on_ready(name: String, x: Float, y: Float): Int {\n  ${}\n  return 0;\n}",
+    "params": ["name", "x", "y"],
+    "boost": 20
+  },
+  {
+    "key": "on_create",
+    "label": "on_create",
+    "detail": "@node hook",
+    "signature": "fn on_create(self)",
+    "doc": "On an `@node` class, called once when Play starts (engine `on_ready`). Use `self.x` / `self.y` / `self.z`.",
+    "kind": "hook",
+    "template": "fn on_create() {\n  ${}\n}",
+    "params": ["self"],
+    "boost": 21
+  },
+  {
+    "key": "on_update",
+    "label": "on_update",
+    "detail": "entity hook",
+    "signature": "fn on_update(name: String, x: Float, y: Float, dt: Float): Int",
+    "doc": "Called every Play frame. Extra `keys` / `pressed` CSV args may be omitted — prefer `input.held` / `input.pressed`. Return 0.",
+    "kind": "hook",
+    "template": "fn on_update(name: String, x: Float, y: Float, dt: Float): Int {\n  ${}\n  return 0;\n}",
+    "params": ["name", "x", "y", "dt"],
+    "boost": 22
+  },
+  {
+    "key": "on_enter",
+    "label": "on_enter",
+    "detail": "overlap start",
+    "signature": "fn on_enter(other: String, x: Float, y: Float): Int",
+    "doc": "Fired when this entity’s world AABB starts overlapping another. `other` is that entity’s name.",
+    "kind": "hook",
+    "template": "fn on_enter(other: String, x: Float, y: Float): Int {\n  ${}\n  return 0;\n}",
+    "params": ["other", "x", "y"],
+    "boost": 18
+  },
+  {
+    "key": "on_exit",
+    "label": "on_exit",
+    "detail": "overlap end",
+    "signature": "fn on_exit(other: String, x: Float, y: Float): Int",
+    "doc": "Fired when this entity’s world AABB stops overlapping `other`.",
+    "kind": "hook",
+    "template": "fn on_exit(other: String, x: Float, y: Float): Int {\n  ${}\n  return 0;\n}",
+    "params": ["other", "x", "y"],
+    "boost": 18
+  },
+  {
+    "key": "on_destroy",
+    "label": "on_destroy",
+    "detail": "entity hook",
+    "signature": "fn on_destroy(): Int",
+    "doc": "Called once when this entity is removed (`strata.destroy` or the host). Optional `name, x, y` parameters match `on_ready`. Return 0.",
+    "kind": "hook",
+    "template": "fn on_destroy(): Int {\n  ${}\n  return 0;\n}",
+    "params": [],
+    "boost": 16
+  },
+  {
+    "key": "print",
+    "label": "print",
+    "detail": "builtin",
+    "signature": "print(value)",
+    "doc": "Write to the Play log. Prefer `strata.*` for world changes; do not print `strata:` lines in new scripts.",
+    "kind": "builtin",
+    "template": "print(${value})",
+    "params": ["value"],
+    "boost": 2
+  },
+  {
+    "key": "len",
+    "label": "len",
+    "detail": "builtin",
+    "signature": "len(value): Int",
+    "doc": "Length of a string, array, or map.",
+    "kind": "builtin",
+    "template": "len(${value})",
+    "params": ["value"]
+  },
+  {
+    "key": "assert",
+    "label": "assert",
+    "detail": "builtin",
+    "signature": "assert(cond)",
+    "doc": "Runtime check. Fails the script when `cond` is false.",
+    "kind": "builtin",
+    "template": "assert(${cond})",
+    "params": ["cond"]
+  },
+  {
+    "key": "Array",
+    "label": "Array",
+    "detail": "builtin",
+    "signature": "Array(...)",
+    "doc": "Build an array from arguments.",
+    "kind": "builtin",
+    "template": "Array(${values})"
+  },
+  {
+    "key": "Map",
+    "label": "Map",
+    "detail": "builtin",
+    "signature": "Map(...)",
+    "doc": "Build a map from arguments.",
+    "kind": "builtin",
+    "template": "Map(${pairs})"
+  },
+  {
+    "key": "Some",
+    "label": "Some",
+    "detail": "Option",
+    "signature": "Some(value)",
+    "doc": "Option constructor for a present value. Pair with `None` and `match`.",
+    "kind": "builtin",
+    "template": "Some(${value})",
+    "params": ["value"]
+  },
+  {
+    "key": "None",
+    "label": "None",
+    "detail": "Option",
+    "signature": "None",
+    "doc": "Option constructor for a missing value. Distinct from `none` (null).",
+    "kind": "builtin",
+    "template": "None"
+  },
+  {
+    "key": "Ok",
+    "label": "Ok",
+    "detail": "Result",
+    "signature": "Ok(value)",
+    "doc": "Result constructor for success. Pair with `Err` and `match`.",
+    "kind": "builtin",
+    "template": "Ok(${value})",
+    "params": ["value"]
+  },
+  {
+    "key": "Err",
+    "label": "Err",
+    "detail": "Result",
+    "signature": "Err(error)",
+    "doc": "Result constructor for failure.",
+    "kind": "builtin",
+    "template": "Err(${error})",
+    "params": ["error"]
+  }
+]

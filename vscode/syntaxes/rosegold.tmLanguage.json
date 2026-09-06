@@ -1,0 +1,247 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "RoseGold",
+  "scopeName": "source.rosegold",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#decorators" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.rosegold",
+          "match": "##.*$"
+        },
+        {
+          "name": "comment.line.number-sign.rosegold",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "decorators": {
+      "patterns": [
+        {
+          "name": "meta.annotation.rosegold",
+          "match": "(@)(test|export|export_group|ufcs|node)\\b",
+          "captures": {
+            "1": { "name": "punctuation.definition.decorator.rosegold" },
+            "2": { "name": "keyword.control.directive.rosegold" }
+          }
+        },
+        {
+          "name": "meta.annotation.rosegold",
+          "begin": "(@)([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.decorator.rosegold" },
+            "2": { "name": "entity.name.function.decorator.rosegold" }
+          },
+          "end": "(?=\\s*(?:pub|fn|struct|class|trait|enum|mod|impl|var|const|signal|@|#)|$)",
+          "patterns": [
+            {
+              "begin": "\\(",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.parameters.begin.rosegold" }
+              },
+              "end": "\\)",
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.parameters.end.rosegold" }
+              },
+              "patterns": [
+                { "include": "#strings" },
+                { "include": "#numbers" },
+                { "include": "#constants" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.interpolated.rosegold",
+          "begin": "\\bf\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.rosegold" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.rosegold" }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.rosegold",
+              "match": "\\\\[\\\\\"ntr]|\\{\\{|\\}\\}"
+            },
+            {
+              "name": "meta.interpolation.rosegold",
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.template-expression.begin.rosegold" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.template-expression.end.rosegold" }
+              },
+              "patterns": [
+                { "include": "$self" }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.rosegold",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.rosegold",
+              "match": "\\\\[\\\\\"ntr]"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.rosegold",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.rosegold",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.import.rosegold",
+          "match": "\\b(import|from|as)\\b"
+        },
+        {
+          "name": "keyword.control.rosegold",
+          "match": "\\b(if|elif|else|while|for|in|match|return|break|continue|pass)\\b"
+        },
+        {
+          "name": "storage.type.rosegold",
+          "match": "\\b(struct|class|trait|extends|enum|mod|impl|fn|var|const|signal)\\b"
+        },
+        {
+          "name": "storage.modifier.rosegold",
+          "match": "\\b(pub)\\b"
+        },
+        {
+          "name": "variable.language.rosegold",
+          "match": "\\b(self|super)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.builtin.rosegold",
+          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Option|Result|Vec2|Vec3|Node|Empty|Sprite|Tilemap|Camera|Mesh|Light)\\b"
+        },
+        {
+          "name": "entity.name.type.rosegold",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.rosegold",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.rosegold",
+          "match": "\\bnone\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "meta.function.rosegold",
+          "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.function.rosegold" },
+            "2": { "name": "entity.name.function.rosegold" }
+          },
+          "end": "(?=\\{|;)"
+        },
+        {
+          "name": "support.function.builtin.rosegold",
+          "match": "\\b(print|len|assert)\\s*(?=\\()"
+        },
+        {
+          "name": "entity.name.function.rosegold",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.rosegold",
+          "match": "(->)"
+        },
+        {
+          "name": "keyword.operator.assignment.compound.rosegold",
+          "match": "(\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=)"
+        },
+        {
+          "name": "keyword.operator.bitwise.shift.rosegold",
+          "match": "(<<|>>)"
+        },
+        {
+          "name": "keyword.operator.comparison.rosegold",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.rosegold",
+          "match": "(\\|\\||&&|!)"
+        },
+        {
+          "name": "keyword.operator.bitwise.rosegold",
+          "match": "(&|\\||\\^|~)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.rosegold",
+          "match": "(//|[+\\-*/%])"
+        },
+        {
+          "name": "keyword.operator.range.rosegold",
+          "match": "\\.\\.=|\\.\\."
+        },
+        {
+          "name": "keyword.operator.assignment.rosegold",
+          "match": "="
+        },
+        {
+          "name": "punctuation.terminator.statement.rosegold",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.rosegold",
+          "match": ","
+        },
+        {
+          "name": "keyword.operator.optional.rosegold",
+          "match": "\\?(?=\\s*([,;)\\]=]|$))"
+        }
+      ]
+    }
+  }
+}

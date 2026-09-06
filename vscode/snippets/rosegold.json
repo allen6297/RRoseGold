@@ -1,0 +1,337 @@
+{
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:args}): ${3:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Function declaration"
+  },
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "fn main(): ${1:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Entry point fn main"
+  },
+  "On ready": {
+    "prefix": "on_ready",
+    "body": [
+      "fn on_ready(name: String, x: Float, y: Float): Int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Entity spawn hook"
+  },
+  "On update": {
+    "prefix": "on_update",
+    "body": [
+      "fn on_update(name: String, x: Float, y: Float, dt: Float): Int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Per-frame entity hook (use input.pressed / input.held)"
+  },
+  "On enter": {
+    "prefix": "on_enter",
+    "body": [
+      "fn on_enter(other: String, x: Float, y: Float): Int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "AABB overlap start"
+  },
+  "On exit": {
+    "prefix": "on_exit",
+    "body": [
+      "fn on_exit(other: String, x: Float, y: Float): Int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "AABB overlap end"
+  },
+  "On destroy": {
+    "prefix": "on_destroy",
+    "body": [
+      "fn on_destroy(): Int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Entity removed hook"
+  },
+  "Test": {
+    "prefix": "@test",
+    "body": [
+      "@test",
+      "fn ${1:test_name}() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "@test function (rosegold test)"
+  },
+  "UFCS": {
+    "prefix": "@ufcs",
+    "body": [
+      "@ufcs",
+      "fn ${1:name}(${2:n}: ${3:Float}): ${4:Float} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Free function callable as a method"
+  },
+  "Export": {
+    "prefix": "@export",
+    "body": [
+      "@export var ${1:name}: ${2:Float} = ${3:0.0};"
+    ],
+    "description": "Inspector-exported variable"
+  },
+  "Export group": {
+    "prefix": "@export_group",
+    "body": [
+      "@export_group(\"${1:Name}\")"
+    ],
+    "description": "Inspector export group"
+  },
+  "Emit": {
+    "prefix": "emit",
+    "body": [
+      "${1:name}.emit(${0});"
+    ],
+    "description": "Fire a signal"
+  },
+  "Signal": {
+    "prefix": "signal",
+    "body": [
+      "signal ${1:name}(${2:args});"
+    ],
+    "description": "Declare a signal"
+  },
+  "F-string": {
+    "prefix": "f\"",
+    "body": [
+      "f\"${1:text {${2:expr}}}\"$0"
+    ],
+    "description": "f-string interpolation"
+  },
+  "Impl": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Name} {",
+      "\tfn ${2:method}(self${3:, args}): ${4:Int} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Methods on a struct, class, or enum"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name} {",
+      "\tvar ${2:x}: ${3:Float} = ${4:0.0};",
+      "\tfn ${5:length}(self): ${6:Float} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Class with fields and methods"
+  },
+  "Class impl": {
+    "prefix": "classimpl",
+    "body": [
+      "class ${1:Name} impl ${2:Trait} {",
+      "\tvar ${3:x}: ${4:Float} = ${5:0.0};",
+      "\tfn ${6:method}(self): ${7:Float} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Class that implements traits"
+  },
+  "Class extends": {
+    "prefix": "classextends",
+    "body": [
+      "class ${1:Name} extends ${2:Parent} impl ${3:Trait} {",
+      "\tvar ${4:x}: ${5:Float} = ${6:0.0};",
+      "\tfn ${7:method}(self): ${8:Float} {",
+      "\t\treturn super.${7:method}();",
+      "\t}",
+      "}"
+    ],
+    "description": "Class that extends a parent and implements traits"
+  },
+  "Node class": {
+    "prefix": ["nodeclass", "@node"],
+    "body": [
+      "import strata.${2:Sprite};",
+      "@node",
+      "class ${1:MyNode} extends ${2:Sprite} {",
+      "\tfn on_create() {",
+      "\t\t$0",
+      "\t}",
+      "\tfn on_update(dt: Float) {",
+      "\t\tpass;",
+      "\t}",
+      "\tfn on_destroy() {",
+      "\t\tpass;",
+      "\t}",
+      "}"
+    ],
+    "description": "Scene node class (@node)"
+  },
+  "Impl trait in class": {
+    "prefix": "impltrait",
+    "body": [
+      "impl ${1:Trait} {",
+      "\tfn ${2:method}(self): ${3:String} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Trait impl nested in a class body"
+  },
+  "Trait": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "\tsignal ${2:event}();",
+      "\tfn ${3:method}();",
+      "}"
+    ],
+    "description": "Trait method signatures and signal contract"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Struct declaration"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:Case},",
+      "\t${3:Payload}(${4:x: Int}),",
+      "\t$0",
+      "}"
+    ],
+    "description": "ADT enum declaration"
+  },
+  "Mod": {
+    "prefix": "mod",
+    "body": [
+      "mod ${1:name} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Module block"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if ${1:cond} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If statement"
+  },
+  "If Else": {
+    "prefix": "ife",
+    "body": [
+      "if ${1:cond} {",
+      "\t$2",
+      "} else {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If / else"
+  },
+  "While": {
+    "prefix": "while",
+    "body": [
+      "while ${1:cond} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "For": {
+    "prefix": "for",
+    "body": [
+      "for ${1:x} in ${2:0..n} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "For-in loop"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "\t${2:pattern} {",
+      "\t\t$0",
+      "\t}",
+      "\t_ {",
+      "\t\tpass;",
+      "\t}",
+      "}"
+    ],
+    "description": "Match statement"
+  },
+  "Var": {
+    "prefix": "var",
+    "body": [
+      "var ${1:name}: ${2:Int} = ${3:0};"
+    ],
+    "description": "Variable binding"
+  },
+  "Const": {
+    "prefix": "const",
+    "body": [
+      "const ${1:name} = ${2:value};"
+    ],
+    "description": "Constant binding"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": [
+      "import ${1:utils};"
+    ],
+    "description": "Import module"
+  },
+  "From Import": {
+    "prefix": "from",
+    "body": [
+      "from ${1:utils} import ${2:move_line};"
+    ],
+    "description": "From-import names"
+  },
+  "From option": {
+    "prefix": "fromoption",
+    "body": [
+      "from option import Option;"
+    ],
+    "description": "Import crate Option"
+  },
+  "From result": {
+    "prefix": "fromresult",
+    "body": [
+      "from result import Result;"
+    ],
+    "description": "Import crate Result"
+  }
+}
