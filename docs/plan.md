@@ -11,9 +11,9 @@ Work for RoseGold that is not happening yet. Language and host APIs first; UI an
 5. ~~Generic `unwrap_or`, array `for`-in types, `?` on `Result`~~ — done
 6. ~~Remaining host modules (`path`, `http`, `regex`)~~ — done (`path.join`/`dirname`/`ext`, `http.get`/`post`, `regex.is_match`/`find`)
 7. ~~Concurrency polish~~ — done (`Channel.close`, recv-after-close `none`, `recv_timeout` / `Task.wait`)
-8. Ship the editor
+8. Ship the editor — VSIX sideload done (`vscode/install.ps1` / `install.sh`). Marketplace / Open VSX pending publisher login for **`allen6297.allen6297`**. See `vscode/PUBLISHING.md`.
 9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, row, field/checkbox/slider, separator/spacer, `quit`/`invalidate`, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered.
-10. `rosegold vendor` when people share `.rg` files
+10. ~~`rosegold vendor` when people share `.rg` files~~ — done (`vendor <git-url>`, lock-only `vendor`, `vendor remove`, `rg.toml`, collision folders `vendor/<name>-<version>/`)
 
 Bytecode / JIT only if something is actually slow after that.
 
@@ -134,10 +134,14 @@ Still not: canvas, animation, routing, menus-as-a-platform, tray, shaders, an a1
 
 After people are copying `.rg` libraries around. No crates.io / npm.
 
-1. **`rosegold vendor <git-url>`** — clone into `vendor/<name>/`. Put `vendor/` on the module path so `import httpclient` → `vendor/httpclient/lib.rg`. Versions are git SHAs in `vendor.lock`.
-2. **Tiny manifest later** — `rg.toml` with `name`, `version`, list of files — only when two versions of the same lib collide (`vendor/httpclient-0.1/`, `vendor/httpclient-0.2/`). Closer to early Go modules than to Cargo.
+1. ~~**`rosegold vendor <git-url>`**~~ — clone into `vendor/<name>/`. `import httpclient` → `vendor/httpclient/lib.rg`. Pins are git SHAs in `vendor.lock`.
+2. ~~**Tiny `rg.toml`**~~ — `name`, `version`, optional `files`. If two versions of the same name would collide, the previous tree moves to `vendor/<name>-<version>/` and the new pin stays at `vendor/<name>/` (what `import httpclient` loads). Extra folders are stored and locked, not imported (`httpclient-0.1` is not an identifier); `vendor remove httpclient-0.1` drops one. No registry, no semver solver.
+3. ~~**`rosegold vendor` (no URL)**~~ — restore every pin from `vendor.lock` into the matching folder. Missing lock is an error. Idempotent.
+4. ~~**`rosegold vendor remove <name>`**~~ — drop that folder and lock line. Unknown name is an error.
 
-Until a vendor path exists, `import vendor.httpclient` already works (`vendor/httpclient/lib.rg` is a dotted lookup). The command’s job is clone + pin SHA and drop the `vendor.` prefix.
+Run `rosegold vendor` from the project root (`main.rg` / `vendor.lock`). `run`/`check` resolve `vendor/` from the entry script’s directory (same as sibling imports). `import vendor.httpclient` still works as a dotted path.
+
+Lock lines are greppable: `name url sha` or `name url sha version`. `name` is the folder and the remove key.
 
 ```text
 scores/

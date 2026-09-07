@@ -1,4 +1,4 @@
-//! CLI: `check`, `run`, `test`, `fmt`, `hover`, `def`, and a REPL.
+//! CLI: `check`, `run`, `test`, `fmt`, `hover`, `def`, `vendor`, and a REPL.
 
 use std::env;
 use std::io::{self, Read, Write};
@@ -22,14 +22,17 @@ Usage:
   rosegold fmt   [--write] [--check] [--stdin] <file>
   rosegold hover [--json] [--stdin] <file> <line> <col>
   rosegold def   [--json] [--stdin] <file> <line> <col>
+  rosegold vendor [git-url]
+  rosegold vendor remove <name>
 
   (no command / repl)  interactive prompt
-  check  parse and typecheck (no eval)
-  run    compile and run (calls main if present); extra args are process.argv()
-  test   run @test functions
-  fmt    pretty-print (stdout; --write in place; --check exit 1 if dirty)
-  hover  symbol signature at 1-based line:col
-  def    go-to-definition at 1-based line:col
+  check   parse and typecheck (no eval)
+  run     compile and run (calls main if present); extra args are process.argv()
+  test    run @test functions
+  fmt     pretty-print (stdout; --write in place; --check exit 1 if dirty)
+  hover   symbol signature at 1-based line:col
+  def     go-to-definition at 1-based line:col
+  vendor  clone a library, restore from vendor.lock, or remove a pin
 
   --stdin  read source from stdin; <file> is the path label / import root
 "
@@ -223,11 +226,19 @@ fn resolve_symbol_file(info: &SymbolInfo, from: &Path) -> PathBuf {
     } else {
         format!("{nested}.rg")
     };
-    let candidates = [
+    let slash = raw.replace('.', "/");
+    let mut candidates = vec![
         dir.join(&name),
         dir.join(&nested),
-        dir.join(raw.replace('.', "/")).join("lib.rg"),
+        dir.join(&slash).join("lib.rg"),
     ];
+    let lower = raw.to_ascii_lowercase();
+    if lower != "vendor" && !lower.starts_with("vendor.") {
+        let vendor = dir.join("vendor");
+        candidates.push(vendor.join(&name));
+        candidates.push(vendor.join(&nested));
+        candidates.push(vendor.join(&slash).join("lib.rg"));
+    }
     for cand in candidates {
         if cand.exists() {
             return cand.canonicalize().unwrap_or(cand);
@@ -445,10 +456,120 @@ fn flush_repl_stdout(session: &mut Session) {
     }
 }
 
+fn vendor_usage() {
+    eprintln!(
+        "\
+Usage:
+  rosegold vendor <git-url>
+  rosegold vendor
+  rosegold vendor remove <name>
+  rosegold vendor --help
+
+Run from the project root (the directory with main.rg / vendor.lock).
+Writes ./vendor/ and ./vendor.lock in the current directory. import looks
+for vendor/ next to the script passed to run/check.
+
+  rosegold vendor <git-url>   clone into vendor/<name>/ and pin the SHA
+  rosegold vendor             restore every pin from vendor.lock
+  rosegold vendor remove NAME drop vendor/<name>/ and its lock line
+
+  import httpclient;          → vendor/httpclient/lib.rg
+  import vendor.httpclient;   still works (dotted path)
+
+A library may include rg.toml (name, version, files). A second vendor of
+the same name at a different version keeps the old tree as
+vendor/<name>-<version>/; import httpclient still loads vendor/httpclient/.
+Extra version folders are stored, not imported; remove them by folder name.
+"
+    );
+}
+
+fn cmd_vendor(args: &[String]) -> i32 {
+    let mut positional = Vec::new();
+    for a in args {
+        if a == "-h" || a == "--help" || a == "help" {
+            vendor_usage();
+            return 0;
+        }
+        if a.starts_with('-') {
+            eprintln!("unknown flag: {a}");
+            vendor_usage();
+            return 2;
+        }
+        positional.push(a.as_str());
+    }
+    let root = match env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cannot read current directory: {e}");
+            return 2;
+        }
+    };
+    match positional.as_slice() {
+        [] => match rosegold::vendor::vendor_from_lock(&root) {
+            Ok(pins) => {
+                for pin in pins {
+                    let short = pin.sha.get(..12).unwrap_or(&pin.sha);
+                    println!("vendored {} → vendor/{} ({short})", pin.name, pin.name);
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        ["remove"] => {
+            eprintln!("rosegold vendor remove requires a package name");
+            vendor_usage();
+            2
+        }
+        ["remove", name] => match rosegold::vendor::vendor_remove(&root, name) {
+            Ok(pin) => {
+                println!("removed {}", pin.name);
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        ["remove", _, extra, ..] => {
+            eprintln!("unexpected argument: {extra}");
+            vendor_usage();
+            2
+        }
+        [url] => match rosegold::vendor::vendor_git(url, &root) {
+            Ok(pin) => {
+                let short = pin.sha.get(..12).unwrap_or(&pin.sha);
+                println!("vendored {} → vendor/{} ({short})", pin.name, pin.name);
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        [_, extra, ..] => {
+            eprintln!("unexpected argument: {extra}");
+            vendor_usage();
+            2
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let mut argv = env::args();
     let _bin = argv.next();
-    let Some(args) = parse_args(argv) else {
+    let rest: Vec<String> = argv.collect();
+    match rest.first().map(String::as_str) {
+        None => return ExitCode::from(cmd_repl() as u8),
+        Some("-h" | "--help" | "help") => usage(),
+        Some("repl") => return ExitCode::from(cmd_repl() as u8),
+        Some("vendor") => return ExitCode::from(cmd_vendor(&rest[1..]) as u8),
+        _ => {}
+    }
+    let Some(args) = parse_args(rest.into_iter()) else {
         return ExitCode::from(cmd_repl() as u8);
     };
     if !args.stdin && !args.path.exists() {

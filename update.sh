@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
-version="1.0.1"
+version="26.0.0"
 cd "$root"
 
 # WSL does not see Windows `cargo` as `cargo` — it's `cargo.exe` under the Windows home.
@@ -95,7 +95,7 @@ else
   exit 0
 fi
 
-vsix="$root/vscode/rosegold-$version.vsix"
+vsix="$root/vscode/allen6297-$version.vsix"
 if [[ ! -f "$vsix" ]]; then
   echo "missing $vsix" >&2
   exit 1

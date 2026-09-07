@@ -914,6 +914,36 @@
         "template": "Array(${values})"
     },
     {
+        "key": "Array.first",
+        "label": "first",
+        "detail": "()",
+        "signature": "Array.first(arr: Array)",
+        "doc": "First element, or none if empty. Also `arr.first()`.",
+        "kind": "method",
+        "template": "first()"
+    },
+    {
+        "key": "Array.last",
+        "label": "last",
+        "detail": "()",
+        "signature": "Array.last(arr: Array)",
+        "doc": "Last element, or none if empty. Also `arr.last()`.",
+        "kind": "method",
+        "template": "last()"
+    },
+    {
+        "key": "Array.contains",
+        "label": "contains",
+        "detail": "(value)",
+        "signature": "Array.contains(arr: Array, value): Bool",
+        "doc": "True if `value` is in the array. Also `arr.contains(value)`.",
+        "kind": "method",
+        "template": "contains(${value})",
+        "params": [
+            "value"
+        ]
+    },
+    {
         "key": "Map",
         "label": "Map",
         "detail": "builtin",

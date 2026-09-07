@@ -148,6 +148,10 @@ from str import contains;
 
 `import util.math` loads `util/math.rg` or `util/math/lib.rg` (also `util.math.rg` and `util/math/main.rg`). Missing imports name those paths. `from m import item` binds `item` in the current file. Runtime errors print a call stack (`from util.boom at main.rg:3:12`) and the file of the error site.
 
+`rosegold vendor <git-url>` clones a library into `vendor/<name>/` and pins the git SHA in `vendor.lock` (lines: `name url sha` or `name url sha version`). Run it from the project root (`main.rg` / `vendor.lock`); `import` looks for `vendor/` next to the script passed to `run`/`check`. `rosegold vendor` with no URL restores the lock. `rosegold vendor remove <name>` drops that folder and lock line. `import httpclient` loads `vendor/httpclient/lib.rg`. `import vendor.httpclient` still works.
+
+A library may ship `rg.toml` (`name`, `version`, optional `files`). If you vendor the same name at a different version, the previous tree is kept as `vendor/httpclient-0.1/` and the new pin stays at `vendor/httpclient/` (what `import httpclient` loads). Extra folders are stored and locked, not imported (`httpclient-0.1` is not an identifier); `rosegold vendor remove httpclient-0.1` drops one.
+
 ## Host modules
 
 Require `import`:

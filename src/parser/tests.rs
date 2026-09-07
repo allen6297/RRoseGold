@@ -383,14 +383,15 @@ fn trailing_map_after_member_call() {
     };
     assert!(matches!(callee.kind, ExprKind::Member { .. }), "{callee:?}");
     assert_eq!(args.len(), 1);
-    assert!(matches!(&args[0].kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "Map")));
+    assert!(
+        matches!(&args[0].kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "Map"))
+    );
 }
 
 #[test]
 fn trailing_closure_then_method() {
-    let kind = first_expr(
-        "fn main(): Int { ui.button(\"OK\") { print(1); }.padding(8); return 0; }\n",
-    );
+    let kind =
+        first_expr("fn main(): Int { ui.button(\"OK\") { print(1); }.padding(8); return 0; }\n");
     let ExprKind::Call { callee, args } = &kind else {
         panic!("{kind:?}")
     };

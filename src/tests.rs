@@ -4709,3 +4709,417 @@ fn main(): Int {
     );
     assert_eq!(out.trim(), "hi\nfalse\n0.5");
 }
+
+fn vendor_temp(label: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rosegold_vendor_{label}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=RoseGoldTest",
+            "-c",
+            "user.email=test@rosegold.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn init_rg_repo(dir: &Path, lib_src: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("lib.rg"), lib_src).unwrap();
+    git_in(dir, &["-c", "init.defaultBranch=main", "init"]);
+    git_in(dir, &["add", "lib.rg"]);
+    git_in(dir, &["commit", "-m", "init"]);
+}
+
+const HTTPCLIENT_LIB: &str = r#"
+fn ping(): String {
+    return "pong";
+}
+"#;
+
+#[test]
+fn import_bare_name_from_vendor_dir() {
+    use std::fs;
+    let dir = vendor_temp("bare");
+    fs::create_dir_all(dir.join("vendor").join("httpclient")).unwrap();
+    fs::write(
+        dir.join("vendor").join("httpclient").join("lib.rg"),
+        HTTPCLIENT_LIB,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.rg"),
+        "import httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&dir.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("pong"), "{}", result.stdout);
+    let diags = check_file(&dir.join("main.rg"));
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn import_vendor_dotted_still_works() {
+    use std::fs;
+    let dir = vendor_temp("dotted");
+    fs::create_dir_all(dir.join("vendor").join("httpclient")).unwrap();
+    fs::write(
+        dir.join("vendor").join("httpclient").join("lib.rg"),
+        HTTPCLIENT_LIB,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.rg"),
+        "import vendor.httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&dir.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("pong"), "{}", result.stdout);
+}
+
+#[test]
+fn local_module_wins_over_vendor() {
+    use std::fs;
+    let dir = vendor_temp("local_wins");
+    fs::create_dir_all(dir.join("vendor").join("httpclient")).unwrap();
+    fs::write(
+        dir.join("vendor").join("httpclient").join("lib.rg"),
+        HTTPCLIENT_LIB,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("httpclient.rg"),
+        "fn ping(): String { return \"local\"; }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.rg"),
+        "import httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&dir.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("local"), "{}", result.stdout);
+}
+
+#[test]
+fn sibling_modules_aliases_vendor_package() {
+    use std::fs;
+    let dir = vendor_temp("siblings");
+    fs::create_dir_all(dir.join("vendor").join("httpclient")).unwrap();
+    fs::write(
+        dir.join("vendor").join("httpclient").join("lib.rg"),
+        HTTPCLIENT_LIB,
+    )
+    .unwrap();
+    let map = sibling_modules(&dir, Some("main.rg"));
+    assert!(
+        map.contains_key("httpclient"),
+        "expected httpclient alias, keys: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn vendor_lookup_hint_mentions_vendor_dir() {
+    let hint = crate::interpreter::module_lookup_hint("httpclient");
+    assert!(hint.contains("vendor/httpclient/lib.rg"), "{hint}");
+    let dotted = crate::interpreter::module_lookup_hint("vendor.httpclient");
+    assert!(dotted.contains("vendor/httpclient/lib.rg"), "{dotted}");
+    assert!(!dotted.contains("vendor/vendor"), "{dotted}");
+}
+
+#[test]
+fn vendor_git_clones_and_import_runs() {
+    use std::fs;
+    let src = vendor_temp("src_httpclient");
+    let src = src.join("httpclient");
+    init_rg_repo(&src, HTTPCLIENT_LIB);
+    let project = vendor_temp("proj_clone");
+    let pin = crate::vendor::vendor_git(src.to_str().unwrap(), &project).expect("vendor");
+    assert_eq!(pin.name, "httpclient");
+    assert!(pin.sha.len() >= 7);
+    assert!(
+        project
+            .join("vendor")
+            .join("httpclient")
+            .join("lib.rg")
+            .is_file()
+    );
+    let lock = fs::read_to_string(project.join("vendor.lock")).unwrap();
+    assert!(lock.contains("httpclient"), "{lock}");
+    assert!(lock.contains(&pin.sha), "{lock}");
+    fs::write(
+        project.join("main.rg"),
+        "import httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&project.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("pong"), "{}", result.stdout);
+}
+
+#[test]
+fn vendor_git_rerun_updates_sha() {
+    use std::fs;
+    let src = vendor_temp("src_update").join("httpclient");
+    init_rg_repo(&src, HTTPCLIENT_LIB);
+    let project = vendor_temp("proj_update");
+    let url = src.to_str().unwrap();
+    let first = crate::vendor::vendor_git(url, &project).expect("first vendor");
+    fs::write(src.join("lib.rg"), "fn ping(): String { return \"v2\"; }\n").unwrap();
+    git_in(&src, &["add", "lib.rg"]);
+    git_in(&src, &["commit", "-m", "bump"]);
+    let second = crate::vendor::vendor_git(url, &project).expect("re-vendor");
+    assert_ne!(first.sha, second.sha);
+    let lock = crate::vendor::read_lockfile(&project).unwrap();
+    assert_eq!(lock.len(), 1);
+    assert_eq!(lock[0].sha, second.sha);
+    fs::write(
+        project.join("main.rg"),
+        "import httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&project.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("v2"), "{}", result.stdout);
+}
+
+#[test]
+fn vendor_git_rejects_missing_lib() {
+    let src = vendor_temp("src_nolib").join("emptyish");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("README.md"), "no library\n").unwrap();
+    git_in(&src, &["-c", "init.defaultBranch=main", "init"]);
+    git_in(&src, &["add", "README.md"]);
+    git_in(&src, &["commit", "-m", "init"]);
+    let project = vendor_temp("proj_nolib");
+    let err = crate::vendor::vendor_git(src.to_str().unwrap(), &project).unwrap_err();
+    assert!(err.contains("lib.rg"), "{err}");
+    assert!(err.contains("emptyish"), "{err}");
+}
+
+#[test]
+fn vendor_git_missing_binary() {
+    let project = vendor_temp("proj_nogit");
+    let err = crate::vendor::vendor_git_with(
+        "https://example.com/httpclient.git",
+        &project,
+        "rosegold-missing-git-binary",
+    )
+    .unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+}
+
+#[test]
+fn vendor_git_bad_url() {
+    let project = vendor_temp("proj_badurl");
+    let err = crate::vendor::vendor_git("rosegold-no-such-remote-zzzz", &project).unwrap_err();
+    assert!(
+        err.contains("failed to clone")
+            || err.contains("not found")
+            || err.contains("does not exist"),
+        "{err}"
+    );
+}
+
+fn write_rg_toml(dir: &Path, name: &str, version: &str, files: &str) {
+    std::fs::write(
+        dir.join("rg.toml"),
+        format!("name = \"{name}\"\nversion = \"{version}\"\nfiles = {files}\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn vendor_reads_rg_toml_name() {
+    use std::fs;
+    let src = vendor_temp("src_toml_name").join("http-client");
+    init_rg_repo(&src, HTTPCLIENT_LIB);
+    write_rg_toml(&src, "httpclient", "0.1", "[\"lib.rg\"]");
+    git_in(&src, &["add", "rg.toml"]);
+    git_in(&src, &["commit", "-m", "manifest"]);
+    let project = vendor_temp("proj_toml_name");
+    let pin = crate::vendor::vendor_git(src.to_str().unwrap(), &project).expect("vendor");
+    assert_eq!(pin.name, "httpclient");
+    assert_eq!(pin.version.as_deref(), Some("0.1"));
+    assert!(
+        project
+            .join("vendor")
+            .join("httpclient")
+            .join("lib.rg")
+            .is_file()
+    );
+    assert!(!project.join("vendor").join("http-client").exists());
+    let lock = fs::read_to_string(project.join("vendor.lock")).unwrap();
+    assert!(lock.contains("httpclient"), "{lock}");
+    assert!(lock.contains("0.1"), "{lock}");
+}
+
+#[test]
+fn vendor_rg_toml_missing_file_errors() {
+    let src = vendor_temp("src_toml_missing").join("httpclient");
+    init_rg_repo(&src, HTTPCLIENT_LIB);
+    write_rg_toml(&src, "httpclient", "0.1", "[\"lib.rg\", \"parse.rg\"]");
+    git_in(&src, &["add", "rg.toml"]);
+    git_in(&src, &["commit", "-m", "manifest"]);
+    let project = vendor_temp("proj_toml_missing");
+    let err = crate::vendor::vendor_git(src.to_str().unwrap(), &project).unwrap_err();
+    assert!(err.contains("parse.rg"), "{err}");
+    assert!(!project.join("vendor").join("httpclient").exists());
+}
+
+#[test]
+fn vendor_keeps_previous_version_on_collision() {
+    use std::fs;
+    let src = vendor_temp("src_collide").join("httpclient");
+    init_rg_repo(&src, "fn ping(): String { return \"v1\"; }\n");
+    write_rg_toml(&src, "httpclient", "0.1", "[\"lib.rg\"]");
+    git_in(&src, &["add", "rg.toml"]);
+    git_in(&src, &["commit", "-m", "v0.1"]);
+    let project = vendor_temp("proj_collide");
+    let url = src.to_str().unwrap();
+    crate::vendor::vendor_git(url, &project).expect("first");
+
+    fs::write(src.join("lib.rg"), "fn ping(): String { return \"v2\"; }\n").unwrap();
+    write_rg_toml(&src, "httpclient", "0.2", "[\"lib.rg\"]");
+    git_in(&src, &["add", "lib.rg", "rg.toml"]);
+    git_in(&src, &["commit", "-m", "v0.2"]);
+    let pin = crate::vendor::vendor_git(url, &project).expect("second");
+    assert_eq!(pin.version.as_deref(), Some("0.2"));
+
+    let current = fs::read_to_string(project.join("vendor").join("httpclient").join("lib.rg")).unwrap();
+    assert!(current.contains("v2"), "{current}");
+    let old = fs::read_to_string(
+        project
+            .join("vendor")
+            .join("httpclient-0.1")
+            .join("lib.rg"),
+    )
+    .unwrap();
+    assert!(old.contains("v1"), "{old}");
+
+    let lock = crate::vendor::read_lockfile(&project).unwrap();
+    assert_eq!(lock.len(), 2, "{lock:?}");
+    let names: Vec<&str> = lock.iter().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"httpclient"), "{names:?}");
+    assert!(names.contains(&"httpclient-0.1"), "{names:?}");
+
+    fs::write(
+        project.join("main.rg"),
+        "import httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&project.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("v2"), "{}", result.stdout);
+}
+
+#[test]
+fn vendor_from_lock_restores_clone() {
+    use std::fs;
+    let src = vendor_temp("src_lock").join("httpclient");
+    init_rg_repo(&src, HTTPCLIENT_LIB);
+    let project = vendor_temp("proj_lock");
+    crate::vendor::vendor_git(src.to_str().unwrap(), &project).expect("vendor");
+    fs::remove_dir_all(project.join("vendor")).unwrap();
+    assert!(!project.join("vendor").join("httpclient").exists());
+    let pins = crate::vendor::vendor_from_lock(&project).expect("restore");
+    assert_eq!(pins.len(), 1);
+    assert!(
+        project
+            .join("vendor")
+            .join("httpclient")
+            .join("lib.rg")
+            .is_file()
+    );
+    let again = crate::vendor::vendor_from_lock(&project).expect("idempotent");
+    assert_eq!(again.len(), 1);
+    fs::write(
+        project.join("main.rg"),
+        "import httpclient;\nfn main(): Int {\n    print(httpclient.ping());\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&project.join("main.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(result.stdout.contains("pong"), "{}", result.stdout);
+}
+
+#[test]
+fn vendor_from_lock_missing_lock_errors() {
+    let project = vendor_temp("proj_nolock");
+    let err = crate::vendor::vendor_from_lock(&project).unwrap_err();
+    assert!(err.contains("vendor.lock"), "{err}");
+}
+
+#[test]
+fn vendor_remove_drops_folder_and_lock() {
+    use std::fs;
+    let src = vendor_temp("src_rm").join("httpclient");
+    init_rg_repo(&src, HTTPCLIENT_LIB);
+    let project = vendor_temp("proj_rm");
+    crate::vendor::vendor_git(src.to_str().unwrap(), &project).expect("vendor");
+    crate::vendor::vendor_remove(&project, "httpclient").expect("remove");
+    assert!(!project.join("vendor").join("httpclient").exists());
+    let pins = crate::vendor::read_lockfile(&project).unwrap();
+    assert!(pins.is_empty(), "{pins:?}");
+    let lock = fs::read_to_string(project.join("vendor.lock")).unwrap();
+    assert!(!lock.contains("httpclient "), "{lock}");
+}
+
+#[test]
+fn vendor_remove_unknown_errors() {
+    let project = vendor_temp("proj_rm_unknown");
+    std::fs::write(project.join("vendor.lock"), "# empty\n").unwrap();
+    let err = crate::vendor::vendor_remove(&project, "httpclient").unwrap_err();
+    assert!(err.contains("httpclient"), "{err}");
+    assert!(err.contains("vendor.lock"), "{err}");
+}
+
+#[test]
+fn vendor_remove_extra_version() {
+    use std::fs;
+    let src = vendor_temp("src_rm_extra").join("httpclient");
+    init_rg_repo(&src, "fn ping(): String { return \"v1\"; }\n");
+    write_rg_toml(&src, "httpclient", "0.1", "[\"lib.rg\"]");
+    git_in(&src, &["add", "rg.toml"]);
+    git_in(&src, &["commit", "-m", "v0.1"]);
+    let project = vendor_temp("proj_rm_extra");
+    let url = src.to_str().unwrap();
+    crate::vendor::vendor_git(url, &project).expect("first");
+    fs::write(src.join("lib.rg"), "fn ping(): String { return \"v2\"; }\n").unwrap();
+    write_rg_toml(&src, "httpclient", "0.2", "[\"lib.rg\"]");
+    git_in(&src, &["add", "lib.rg", "rg.toml"]);
+    git_in(&src, &["commit", "-m", "v0.2"]);
+    crate::vendor::vendor_git(url, &project).expect("second");
+    crate::vendor::vendor_remove(&project, "httpclient-0.1").expect("remove extra");
+    assert!(!project.join("vendor").join("httpclient-0.1").exists());
+    assert!(
+        project
+            .join("vendor")
+            .join("httpclient")
+            .join("lib.rg")
+            .is_file()
+    );
+    let pins = crate::vendor::read_lockfile(&project).unwrap();
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0].name, "httpclient");
+}

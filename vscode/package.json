@@ -1,10 +1,15 @@
 {
-  "name": "rosegold",
+  "name": "allen6297",
   "displayName": "RoseGold",
   "description": "Language support for the RoseGold programming language",
-    "version": "1.0.1",
-  "publisher": "rosegold",
+  "version": "26.0.0",
+  "publisher": "allen6297",
   "license": "MIT",
+  "icon": "icons/rosegold.png",
+  "galleryBanner": {
+    "color": "#241016",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/allen6297/RRoseGold.git"
@@ -231,9 +236,10 @@
     }
   },
   "scripts": {
-    "package": "npx --yes @vscode/vsce package",
+    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "check-catalog": "node catalog-check.js",
     "vscode:prepublish": "echo ready",
-    "test": "node --test scan.test.js"
+    "test": "node --test scan.test.js catalog-check.test.js"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.0"

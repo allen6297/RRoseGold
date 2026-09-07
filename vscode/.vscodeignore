@@ -5,3 +5,10 @@ node_modules/**
 *.vsix
 .DS_Store
 **/*.map
+*.test.js
+catalog-check.js
+install.ps1
+install.sh
+publish.ps1
+publish.sh
+PUBLISHING.md

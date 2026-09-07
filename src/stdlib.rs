@@ -27,7 +27,14 @@ pub fn sources_map() -> HashMap<String, String> {
 pub fn is_host_module(name: &str) -> bool {
     matches!(
         name,
-        "io" | "time" | "process" | "json" | "path" | "http" | "regex" | "__math" | "__str"
+        "io" | "time"
+            | "process"
+            | "json"
+            | "path"
+            | "http"
+            | "regex"
+            | "__math"
+            | "__str"
             | "__ui"
     )
 }

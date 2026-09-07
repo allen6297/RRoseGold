@@ -12,6 +12,7 @@ pub mod repl;
 pub mod signal;
 pub mod stdlib;
 pub mod typecheck;
+pub mod vendor;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -272,9 +273,44 @@ fn walk_rg_modules(
                 .to_string_lossy()
                 .replace(std::path::MAIN_SEPARATOR, ".");
             if dotted != stem {
-                map.insert(dotted, src);
+                map.insert(dotted, src.clone());
+            }
+            if let Some(alias) = vendor_package_alias(rel) {
+                map.entry(alias.clone()).or_insert_with(|| src.clone());
+                map.entry(format!("{alias}.rg")).or_insert(src);
             }
         }
+    }
+}
+
+/// `vendor/httpclient/lib.rg` → `httpclient`; `vendor/httpclient/parse.rg` → `httpclient.parse`.
+fn vendor_package_alias(rel: &Path) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for c in rel.components() {
+        parts.push(c.as_os_str().to_str()?.to_string());
+    }
+    if parts.first().map(|s| s.as_str()) != Some("vendor") {
+        return None;
+    }
+    parts.remove(0);
+    if parts.is_empty() {
+        return None;
+    }
+    if let Some(last) = parts.last_mut() {
+        if let Some(stem) = last.strip_suffix(".rg") {
+            *last = stem.to_string();
+        }
+    }
+    if parts.len() == 1 {
+        return Some(parts.remove(0));
+    }
+    if matches!(parts.last().map(|s| s.as_str()), Some("lib" | "main")) {
+        parts.pop();
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
     }
 }
 

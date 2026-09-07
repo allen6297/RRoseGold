@@ -118,11 +118,72 @@ impl FileModuleResolver {
 pub fn module_lookup_hint(name: &str) -> String {
     let stem = name.strip_suffix(".rg").unwrap_or(name);
     let dotted = stem.replace('.', "/");
+    let vendor =
+        stem.eq_ignore_ascii_case("vendor") || stem.to_ascii_lowercase().starts_with("vendor.");
     if dotted == stem {
-        format!("{stem}.rg or {stem}/lib.rg")
-    } else {
+        if vendor {
+            format!("{stem}.rg or {stem}/lib.rg")
+        } else {
+            format!("{stem}.rg, {stem}/lib.rg, vendor/{stem}.rg, or vendor/{stem}/lib.rg")
+        }
+    } else if vendor {
         format!("{stem}.rg, {dotted}.rg, or {dotted}/lib.rg")
+    } else {
+        format!(
+            "{stem}.rg, {dotted}.rg, {dotted}/lib.rg, vendor/{dotted}.rg, or vendor/{dotted}/lib.rg"
+        )
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn local_import_candidates(base: &Path, name: &str) -> Vec<PathBuf> {
+    let dotted = name.replace('.', std::path::MAIN_SEPARATOR_STR);
+    vec![
+        base.join(format!("{name}.rg")),
+        base.join(format!("{dotted}.rg")),
+        base.join(&dotted).join("lib.rg"),
+        base.join(&dotted).join("main.rg"),
+        base.join(name).join("lib.rg"),
+        base.join(name).join("main.rg"),
+    ]
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn vendor_import_candidates(base: &Path, name: &str) -> Vec<PathBuf> {
+    let lower = name.to_ascii_lowercase();
+    if lower == "vendor" || lower.starts_with("vendor.") {
+        return Vec::new();
+    }
+    let dotted = name.replace('.', std::path::MAIN_SEPARATOR_STR);
+    let vendor = base.join("vendor");
+    vec![
+        vendor.join(format!("{name}.rg")),
+        vendor.join(format!("{dotted}.rg")),
+        vendor.join(&dotted).join("lib.rg"),
+        vendor.join(&dotted).join("main.rg"),
+        vendor.join(name).join("lib.rg"),
+        vendor.join(name).join("main.rg"),
+    ]
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn push_module_file(
+    seen: &mut HashSet<PathBuf>,
+    out: &mut Vec<(String, String)>,
+    fallback_name: &str,
+    path: PathBuf,
+    source: String,
+) {
+    let id = path.canonicalize().unwrap_or_else(|_| path.clone());
+    if !seen.insert(id) {
+        return;
+    }
+    let key = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(fallback_name)
+        .to_string();
+    out.push((key, source));
 }
 
 impl ModuleResolver for FileModuleResolver {
@@ -141,32 +202,11 @@ impl ModuleResolver for FileModuleResolver {
             let stem = name.strip_suffix(".rg").unwrap_or(name);
             let mut out = Vec::new();
             let mut seen = HashSet::new();
-            let mut push = |path: PathBuf, source: String| {
-                let id = path.canonicalize().unwrap_or_else(|_| path.clone());
-                if !seen.insert(id) {
-                    return;
-                }
-                let key = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(name)
-                    .to_string();
-                out.push((key, source));
-            };
 
-            let dotted = name.replace('.', std::path::MAIN_SEPARATOR_STR);
-            let candidates = [
-                self.base.join(format!("{}.rg", name)),
-                self.base.join(format!("{}.rg", dotted)),
-                self.base.join(&dotted).join("lib.rg"),
-                self.base.join(&dotted).join("main.rg"),
-                self.base.join(name).join("lib.rg"),
-                self.base.join(name).join("main.rg"),
-            ];
-            for path in candidates {
+            for path in local_import_candidates(&self.base, name) {
                 if path.exists() {
                     if let Ok(source) = std::fs::read_to_string(&path) {
-                        push(path, source);
+                        push_module_file(&mut seen, &mut out, name, path, source);
                     }
                 }
             }
@@ -185,7 +225,16 @@ impl ModuleResolver for FileModuleResolver {
                     if file_stem.eq_ignore_ascii_case(stem)
                         || crate::parser::source_has_mod(&source, name)
                     {
-                        push(path, source);
+                        push_module_file(&mut seen, &mut out, name, path, source);
+                    }
+                }
+            }
+            if out.is_empty() {
+                for path in vendor_import_candidates(&self.base, name) {
+                    if path.exists() {
+                        if let Ok(source) = std::fs::read_to_string(&path) {
+                            push_module_file(&mut seen, &mut out, name, path, source);
+                        }
                     }
                 }
             }
