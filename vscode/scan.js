@@ -137,7 +137,7 @@ function scanSource(src) {
       masked,
       body.start,
       body.end,
-      /(?:^|[^A-Za-z0-9_])(?:pub\s+)?fn\s+([A-Za-z_]\w*)/g,
+      /(?:^|[^A-Za-z0-9_])(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/g,
     );
     const methodBodies = methods
       .map((m) => findBody(masked, m.from))
@@ -186,7 +186,7 @@ function scanSource(src) {
         masked,
         body.start,
         body.end,
-        /(?:^|[^A-Za-z0-9_])(?:pub\s+)?fn\s+([A-Za-z_]\w*)/g,
+        /(?:^|[^A-Za-z0-9_])(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/g,
       ),
       signals: membersIn(
         masked,
@@ -212,7 +212,7 @@ function scanSource(src) {
   };
 
   const symbols = [
-    ...top("fn", /(?:^|[^A-Za-z0-9_])(?:pub\s+)?fn\s+([A-Za-z_]\w*)/g),
+    ...top("fn", /(?:^|[^A-Za-z0-9_])(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/g),
     ...top(
       "var",
       /(?:^|[^A-Za-z0-9_])(?:pub\s+)?var\s+([A-Za-z_]\w*)/g,

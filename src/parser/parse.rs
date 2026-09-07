@@ -7,11 +7,34 @@ use super::ast::*;
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// When false, `{` after a call/ident is not a trailing closure
+    /// (`if cond {`, `match x {`, `for x in xs {`).
+    allow_trailing_closure: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            allow_trailing_closure: true,
+        }
+    }
+
+    fn with_trailing<F, T>(&mut self, enabled: bool, f: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut Self) -> Result<T, String>,
+    {
+        let prev = self.allow_trailing_closure;
+        self.allow_trailing_closure = enabled;
+        let result = f(self);
+        self.allow_trailing_closure = prev;
+        result
+    }
+
+    /// Condition / scrutinee / iterator followed by a statement `{` block.
+    fn parse_expr_before_block(&mut self) -> Result<Expr, String> {
+        self.with_trailing(false, Self::parse_expr)
     }
 
     fn peek(&self) -> &TokenKind {
@@ -20,6 +43,10 @@ impl Parser {
 
     fn at(&self, kind: TokenKind) -> bool {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(&kind)
+    }
+
+    fn at_fn_start(&self) -> bool {
+        self.at(TokenKind::Fn) || self.at(TokenKind::Async)
     }
 
     fn advance(&mut self) -> Token {
@@ -178,7 +205,7 @@ impl Parser {
         };
         match self.peek() {
             TokenKind::Import | TokenKind::From => Ok(Item::Import(self.parse_import()?)),
-            TokenKind::Fn => {
+            TokenKind::Fn | TokenKind::Async => {
                 let mut decl = self.parse_fn_decl()?;
                 decl.is_test = is_test;
                 decl.is_ufcs = is_ufcs;
@@ -354,7 +381,7 @@ impl Parser {
                     _ => break,
                 }
             }
-            if !self.at(TokenKind::Fn) {
+            if !self.at_fn_start() {
                 let t = &self.tokens[self.pos];
                 return Err(format!(
                     "expected fn in impl body at {}:{}",
@@ -528,7 +555,7 @@ impl Parser {
                         doc,
                     });
                 }
-                TokenKind::Fn => {
+                TokenKind::Fn | TokenKind::Async => {
                     let mut decl = self.parse_fn_decl()?;
                     decl.doc = doc;
                     decl.leading = leading;
@@ -612,7 +639,7 @@ impl Parser {
                 signals.push(sig);
                 continue;
             }
-            if self.at(TokenKind::Fn) {
+            if self.at_fn_start() {
                 let mut method = self.parse_fn_signature()?;
                 method.leading = leading;
                 methods.push(method);
@@ -633,7 +660,7 @@ impl Parser {
     }
 
     fn parse_fn_signature(&mut self) -> Result<TraitMethod, String> {
-        self.advance(); // fn
+        let is_async = self.consume_async_fn()?;
         let name = self.expect_ident("expected function name")?;
         self.expect(TokenKind::LParen, "expected '(' after function name")?;
         let params = self.parse_params()?;
@@ -648,6 +675,7 @@ impl Parser {
             params,
             return_type,
             leading: Vec::new(),
+            is_async,
         })
     }
 
@@ -682,7 +710,7 @@ impl Parser {
                 });
             }
             let _ = self.consume(TokenKind::Pub);
-            if self.at(TokenKind::Fn) {
+            if self.at_fn_start() {
                 let _ = self.parse_fn_decl()?;
                 let _ = self.consume(TokenKind::Comma);
                 continue;
@@ -792,8 +820,35 @@ impl Parser {
         })
     }
 
+    fn consume_async_fn(&mut self) -> Result<bool, String> {
+        let is_async = self.consume(TokenKind::Async);
+        if is_async {
+            self.expect(TokenKind::Fn, "expected 'fn' after 'async'")?;
+        } else {
+            self.expect(TokenKind::Fn, "expected fn")?;
+        }
+        Ok(is_async)
+    }
+
+    /// `fn` already consumed. Expression: `fn(x: Int): Int { return x; }`.
+    fn parse_lambda_rest(&mut self, span: crate::Span) -> Result<Expr, String> {
+        self.expect(TokenKind::LParen, "expected '(' after 'fn'")?;
+        let params = self.parse_params()?;
+        self.expect(TokenKind::RParen, "expected ')' after parameters")?;
+        let return_type = self.parse_return_type()?;
+        let body = self.parse_block()?;
+        Ok(Self::expr(
+            ExprKind::Lambda {
+                params,
+                return_type,
+                body,
+            },
+            span,
+        ))
+    }
+
     fn parse_fn_decl(&mut self) -> Result<FnDecl, String> {
-        self.advance(); // fn
+        let is_async = self.consume_async_fn()?;
         let name = self.expect_ident("expected function name")?;
         self.expect(TokenKind::LParen, "expected '(' after function name")?;
         let params = self.parse_params()?;
@@ -807,6 +862,7 @@ impl Parser {
             body,
             is_test: false,
             is_ufcs: false,
+            is_async,
             doc: None,
             leading: Vec::new(),
             is_pub: false,
@@ -985,7 +1041,8 @@ impl Parser {
             }
             _ => {
                 let expr = self.parse_expr()?;
-                let is_block_expr = matches!(expr.kind, ExprKind::Match { .. });
+                let is_block_expr =
+                    matches!(expr.kind, ExprKind::Match { .. } | ExprKind::Lambda { .. });
                 if is_block_expr {
                     self.consume(TokenKind::Semicolon); // optional
                 } else {
@@ -999,12 +1056,12 @@ impl Parser {
     fn parse_if(&mut self) -> Result<Stmt, String> {
         let span = self.span();
         self.advance(); // if
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_before_block()?;
         let then_block = self.parse_block()?;
         let mut elif_blocks = Vec::new();
         let mut else_block = None;
         while self.consume(TokenKind::Elif) {
-            let elif_cond = self.parse_expr()?;
+            let elif_cond = self.parse_expr_before_block()?;
             let elif_block = self.parse_block()?;
             elif_blocks.push((elif_cond, elif_block));
         }
@@ -1025,7 +1082,7 @@ impl Parser {
     fn parse_while(&mut self) -> Result<Stmt, String> {
         let span = self.span();
         self.advance(); // while
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_before_block()?;
         let body = self.parse_block()?;
         Ok(Self::stmt(StmtKind::While { cond, body }, span))
     }
@@ -1035,7 +1092,7 @@ impl Parser {
         self.advance(); // for
         let name = self.expect_ident("expected loop variable")?;
         self.expect(TokenKind::In, "expected 'in' after loop variable")?;
-        let iter = self.parse_expr()?;
+        let iter = self.parse_expr_before_block()?;
         let body = self.parse_block()?;
         Ok(Self::stmt(StmtKind::For { name, iter, body }, span))
     }
@@ -1467,6 +1524,20 @@ impl Parser {
                 span,
             ));
         }
+        if self.consume(TokenKind::Spawn) {
+            let expr = self.parse_unary()?;
+            if !matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Lambda { .. }) {
+                return Err(format!(
+                    "spawn expects a call or fn() {{ ... }} at {}:{}",
+                    span.line, span.col
+                ));
+            }
+            return Ok(Self::expr(ExprKind::Spawn(Box::new(expr)), span));
+        }
+        if self.consume(TokenKind::Await) {
+            let expr = self.parse_unary()?;
+            return Ok(Self::expr(ExprKind::Await(Box::new(expr)), span));
+        }
         self.parse_postfix()
     }
 
@@ -1493,6 +1564,36 @@ impl Parser {
         false
     }
 
+    /// `{ … }` as a zero-param lambda (trailing closure).
+    fn parse_trailing_lambda(&mut self) -> Result<Expr, String> {
+        let span = self.span();
+        let body = self.parse_block()?;
+        Ok(Self::expr(
+            ExprKind::Lambda {
+                params: Vec::new(),
+                return_type: None,
+                body,
+            },
+            span,
+        ))
+    }
+
+    fn append_trailing_closure(expr: Expr, lambda: Expr, span: crate::Span) -> Expr {
+        match expr.kind {
+            ExprKind::Call { callee, mut args } => {
+                args.push(lambda);
+                Self::expr(ExprKind::Call { callee, args }, span)
+            }
+            _ => Self::expr(
+                ExprKind::Call {
+                    callee: Box::new(expr),
+                    args: vec![lambda],
+                },
+                span,
+            ),
+        }
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -1517,7 +1618,7 @@ impl Parser {
                     span,
                 );
             } else if self.consume(TokenKind::LBracket) {
-                let index = self.parse_expr()?;
+                let index = self.with_trailing(true, Self::parse_expr)?;
                 self.expect(TokenKind::RBracket, "expected ']' after index")?;
                 expr = Self::expr(
                     ExprKind::Index {
@@ -1526,24 +1627,37 @@ impl Parser {
                     },
                     span,
                 );
-            } else if self.is_struct_literal_start() {
-                if let ExprKind::Ident(name) = &expr.kind {
-                    let name = name.clone();
-                    self.advance(); // {
-                    let mut fields = Vec::new();
-                    if !self.at(TokenKind::RBrace) {
-                        loop {
-                            let field_name = self.expect_ident("expected field name")?;
-                            self.expect(TokenKind::Colon, "expected ':' after field name")?;
-                            let value = self.parse_expr()?;
-                            fields.push((field_name, value));
-                            if !self.consume(TokenKind::Comma) || self.at(TokenKind::RBrace) {
-                                break;
+            } else if self.consume(TokenKind::Question) {
+                expr = Self::expr(ExprKind::Try(Box::new(expr)), span);
+            } else if self.at(TokenKind::LBrace) {
+                let trailing = self.allow_trailing_closure
+                    && (matches!(expr.kind, ExprKind::Call { .. })
+                        || (matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Member { .. })
+                            && !self.is_struct_literal_start()));
+                if trailing {
+                    let lambda = self.parse_trailing_lambda()?;
+                    expr = Self::append_trailing_closure(expr, lambda, span);
+                } else if self.is_struct_literal_start() {
+                    if let ExprKind::Ident(name) = &expr.kind {
+                        let name = name.clone();
+                        self.advance(); // {
+                        let mut fields = Vec::new();
+                        if !self.at(TokenKind::RBrace) {
+                            loop {
+                                let field_name = self.expect_ident("expected field name")?;
+                                self.expect(TokenKind::Colon, "expected ':' after field name")?;
+                                let value = self.with_trailing(true, Self::parse_expr)?;
+                                fields.push((field_name, value));
+                                if !self.consume(TokenKind::Comma) || self.at(TokenKind::RBrace) {
+                                    break;
+                                }
                             }
                         }
+                        self.expect(TokenKind::RBrace, "expected '}' after struct fields")?;
+                        expr = Self::expr(ExprKind::StructLiteral { name, fields }, span);
+                    } else {
+                        break;
                     }
-                    self.expect(TokenKind::RBrace, "expected '}' after struct fields")?;
-                    expr = Self::expr(ExprKind::StructLiteral { name, fields }, span);
                 } else {
                     break;
                 }
@@ -1555,6 +1669,11 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
+        if self.at_ident() {
+            let span = self.span();
+            let name = self.expect_ident("expected identifier")?;
+            return Ok(Self::expr(ExprKind::Ident(name), span));
+        }
         let t = self.advance();
         let span = t.span;
         match t.kind {
@@ -1570,6 +1689,7 @@ impl Parser {
             TokenKind::None => Ok(Self::expr(ExprKind::Literal(Literal::None), span)),
             TokenKind::Self_ => Ok(Self::expr(ExprKind::Ident("self".to_string()), span)),
             TokenKind::Super => Ok(Self::expr(ExprKind::Ident("super".to_string()), span)),
+            TokenKind::Fn => self.parse_lambda_rest(span),
             TokenKind::Ident(name) => Ok(Self::expr(ExprKind::Ident(name), span)),
             TokenKind::Array => Ok(Self::expr(ExprKind::Ident("Array".to_string()), span)),
             TokenKind::Map => Ok(Self::expr(ExprKind::Ident("Map".to_string()), span)),
@@ -1579,7 +1699,7 @@ impl Parser {
             TokenKind::Bool => Ok(Self::expr(ExprKind::Ident("Bool".to_string()), span)),
             TokenKind::Void => Ok(Self::expr(ExprKind::Ident("Void".to_string()), span)),
             TokenKind::LParen => {
-                let expr = self.parse_expr()?;
+                let expr = self.with_trailing(true, Self::parse_expr)?;
                 self.expect(TokenKind::RParen, "expected ')' after expression")?;
                 Ok(expr)
             }
@@ -1587,7 +1707,7 @@ impl Parser {
                 let mut elements = Vec::new();
                 if !self.at(TokenKind::RBracket) {
                     loop {
-                        elements.push(self.parse_expr()?);
+                        elements.push(self.with_trailing(true, Self::parse_expr)?);
                         if !self.consume(TokenKind::Comma) {
                             break;
                         }
@@ -1607,9 +1727,9 @@ impl Parser {
                 let mut entries = Vec::new();
                 if !self.at(TokenKind::RBrace) {
                     loop {
-                        let key = self.parse_expr()?;
+                        let key = self.with_trailing(true, Self::parse_expr)?;
                         self.expect(TokenKind::Colon, "expected ':' after map key")?;
-                        let value = self.parse_expr()?;
+                        let value = self.with_trailing(true, Self::parse_expr)?;
                         entries.push(key);
                         entries.push(value);
                         if !self.consume(TokenKind::Comma) {
@@ -1628,7 +1748,7 @@ impl Parser {
                 ))
             }
             TokenKind::Match => {
-                let expr = self.parse_expr()?;
+                let expr = self.parse_expr_before_block()?;
                 self.expect(TokenKind::LBrace, "expected '{' before match arms")?;
                 let mut arms = Vec::new();
                 while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -1658,7 +1778,7 @@ impl Parser {
             return Ok(args);
         }
         loop {
-            args.push(self.parse_expr()?);
+            args.push(self.with_trailing(true, Self::parse_expr)?);
             if !self.consume(TokenKind::Comma) {
                 break;
             }

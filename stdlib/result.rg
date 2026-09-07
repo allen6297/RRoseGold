@@ -21,7 +21,7 @@ pub mod result {
             }
         }
 
-        fn unwrap_or(self, fallback: Int) {
+        fn unwrap_or(self, fallback: T) {
             match self {
                 Ok(v) { return v; }
                 Err(_) { return fallback; }

@@ -39,7 +39,8 @@ fn hash_comment_does_not_attach() {
 
 #[test]
 fn docs_attach_to_local_var() {
-    let items = parse("fn main(): Int {\n    ## local counter\n    var n: Int = 1;\n    return n;\n}\n");
+    let items =
+        parse("fn main(): Int {\n    ## local counter\n    var n: Int = 1;\n    return n;\n}\n");
     let Item::FnDecl(f) = &items[0] else {
         panic!("{:?}", items[0])
     };
@@ -272,4 +273,248 @@ mod shapes {
         panic!("{:?}", m.items[2])
     };
     assert!(area.is_pub);
+}
+
+#[test]
+fn spawn_call_parses() {
+    let items = parse("fn main(): Int { var t = spawn foo(); return 0; }\n");
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    let StmtKind::VarDecl(v) = &f.body.stmts[0].kind else {
+        panic!("{:?}", f.body.stmts[0].kind)
+    };
+    let ExprKind::Spawn(inner) = &v.value.as_ref().unwrap().kind else {
+        panic!("{:?}", v.value)
+    };
+    assert!(matches!(inner.kind, ExprKind::Call { .. }));
+}
+
+#[test]
+fn spawn_non_call_is_error() {
+    let tokens = Lexer::new("fn main(): Int { spawn x; return 0; }\n")
+        .tokenize()
+        .unwrap();
+    let err = Parser::new(tokens).parse().unwrap_err();
+    assert!(err.contains("spawn expects a call"), "{err}");
+}
+
+#[test]
+fn await_parses() {
+    let items = parse("fn main(): Int { await t; return 0; }\n");
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    let StmtKind::Expr(e) = &f.body.stmts[0].kind else {
+        panic!("{:?}", f.body.stmts[0].kind)
+    };
+    assert!(matches!(e.kind, ExprKind::Await(_)));
+}
+
+fn first_expr(src: &str) -> ExprKind {
+    let items = parse(src);
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    match &f.body.stmts[0].kind {
+        StmtKind::Expr(e) => e.kind.clone(),
+        StmtKind::VarDecl(v) => v.value.as_ref().unwrap().kind.clone(),
+        other => panic!("{:?}", other),
+    }
+}
+
+fn assert_trailing_call(kind: &ExprKind, arg_count: usize) {
+    let ExprKind::Call { args, .. } = kind else {
+        panic!("expected Call, got {kind:?}")
+    };
+    assert_eq!(args.len(), arg_count, "{args:?}");
+    let ExprKind::Lambda {
+        params,
+        return_type,
+        ..
+    } = &args[arg_count - 1].kind
+    else {
+        panic!(
+            "expected trailing Lambda, got {:?}",
+            args[arg_count - 1].kind
+        )
+    };
+    assert!(params.is_empty(), "{params:?}");
+    assert!(return_type.is_none());
+}
+
+#[test]
+fn trailing_closure_after_call() {
+    assert_trailing_call(
+        &first_expr("fn main(): Int { foo(1) { print(x); }; return 0; }\n"),
+        2,
+    );
+    assert_trailing_call(
+        &first_expr("fn main(): Int { foo() { print(1); }; return 0; }\n"),
+        1,
+    );
+    assert_trailing_call(&first_expr("fn main(): Int { foo() {}; return 0; }\n"), 1);
+}
+
+#[test]
+fn trailing_closure_after_ident() {
+    assert_trailing_call(
+        &first_expr("fn main(): Int { column { print(1); }; return 0; }\n"),
+        1,
+    );
+}
+
+#[test]
+fn trailing_closure_after_member_call() {
+    let kind = first_expr("fn main(): Int { ui.button(\"OK\") { print(1); }; return 0; }\n");
+    let ExprKind::Call { callee, args } = &kind else {
+        panic!("{kind:?}")
+    };
+    assert!(matches!(callee.kind, ExprKind::Member { .. }), "{callee:?}");
+    assert_eq!(args.len(), 2);
+    assert!(matches!(args[1].kind, ExprKind::Lambda { .. }));
+}
+
+#[test]
+fn struct_literal_not_trailing_closure() {
+    assert!(matches!(
+        first_expr("fn main(): Int { var p = Point {}; return 0; }\n"),
+        ExprKind::StructLiteral { name, fields }
+            if name == "Point" && fields.is_empty()
+    ));
+    assert!(matches!(
+        first_expr("fn main(): Int { var p = Point { x: 1 }; return 0; }\n"),
+        ExprKind::StructLiteral { name, fields }
+            if name == "Point" && fields.len() == 1 && fields[0].0 == "x"
+    ));
+}
+
+#[test]
+fn if_while_for_match_keep_their_blocks() {
+    let items = parse(
+        "fn main(): Int {\n    if foo() { return 1; }\n    while bar() { break; }\n    for x in xs { pass; }\n    match self {\n        None { return 0; }\n    }\n    return 0;\n}\n",
+    );
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    assert!(matches!(f.body.stmts[0].kind, StmtKind::If { .. }));
+    assert!(matches!(f.body.stmts[1].kind, StmtKind::While { .. }));
+    assert!(matches!(f.body.stmts[2].kind, StmtKind::For { .. }));
+    assert!(matches!(
+        f.body.stmts[3].kind,
+        StmtKind::Expr(Expr {
+            kind: ExprKind::Match { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn map_literal_stays_map() {
+    let kind = first_expr("fn main(): Int { var m = { \"a\": 1 }; return 0; }\n");
+    let ExprKind::Call { callee, args } = &kind else {
+        panic!("{kind:?}")
+    };
+    assert!(matches!(&callee.kind, ExprKind::Ident(n) if n == "Map"));
+    assert_eq!(args.len(), 2);
+}
+
+#[test]
+fn lambda_parses() {
+    let items =
+        parse("fn main(): Int { var f = fn(x: Int): Int { return x + 1; }; return f(1); }\n");
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    let StmtKind::VarDecl(v) = &f.body.stmts[0].kind else {
+        panic!("{:?}", f.body.stmts[0].kind)
+    };
+    assert!(matches!(
+        v.value.as_ref().unwrap().kind,
+        ExprKind::Lambda { .. }
+    ));
+}
+
+#[test]
+fn spawn_lambda_parses() {
+    let items = parse("fn main(): Int { spawn fn() { pass; }; return 0; }\n");
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    let StmtKind::Expr(e) = &f.body.stmts[0].kind else {
+        panic!("{:?}", f.body.stmts[0].kind)
+    };
+    let ExprKind::Spawn(inner) = &e.kind else {
+        panic!("{:?}", e.kind)
+    };
+    assert!(matches!(inner.kind, ExprKind::Lambda { .. }));
+}
+
+#[test]
+fn try_postfix_parses() {
+    let kind = first_expr("fn go(): Result { var n = Result.Ok(1)?; return n; }\n");
+    let ExprKind::Try(inner) = kind else {
+        panic!("expected Try, got {kind:?}")
+    };
+    assert!(matches!(
+        inner.kind,
+        ExprKind::Call { .. } | ExprKind::Member { .. }
+    ));
+}
+
+#[test]
+fn try_postfix_after_call() {
+    let kind = first_expr("fn go(): Result { load()?; return Result.Ok(0); }\n");
+    assert!(matches!(kind, ExprKind::Try(_)), "{kind:?}");
+}
+
+#[test]
+fn async_fn_sets_flag() {
+    let items = parse("async fn add(a: Int, b: Int): Int { return a + b; }\n");
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    assert!(f.is_async);
+    assert_eq!(f.name, "add");
+    assert!(
+        !parse("fn add(a: Int, b: Int): Int { return a + b; }\n")
+            .into_iter()
+            .any(|item| matches!(item, Item::FnDecl(f) if f.is_async))
+    );
+}
+
+#[test]
+fn async_method_and_trait_signature() {
+    let items = parse(
+        r#"
+trait Loader {
+    async fn load(): Int;
+}
+class Box {
+    async fn get(): Int {
+        return 1;
+    }
+}
+"#,
+    );
+    let Item::TraitDecl(t) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    assert!(t.methods[0].is_async);
+    let Item::ClassDecl(c) = &items[1] else {
+        panic!("{:?}", items[1])
+    };
+    assert!(c.methods[0].is_async);
+}
+
+#[test]
+fn async_without_fn_is_error() {
+    let tokens = Lexer::new("async add(): Int { return 1; }\n")
+        .tokenize()
+        .unwrap();
+    let err = Parser::new(tokens).parse().unwrap_err();
+    assert!(
+        err.contains("expected 'fn' after 'async'") || err.contains("expected fn"),
+        "{err}"
+    );
 }

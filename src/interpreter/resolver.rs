@@ -2,8 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-pub trait ModuleResolver {
+pub type ResolverRef = Arc<Mutex<dyn ModuleResolver>>;
+
+pub trait ModuleResolver: Send + Sync {
     fn resolve(&self, name: &str) -> Option<String> {
         self.resolve_all(name)
             .into_iter()

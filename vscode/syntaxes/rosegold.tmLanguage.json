@@ -130,7 +130,7 @@
         },
         {
           "name": "keyword.control.rosegold",
-          "match": "\\b(if|elif|else|while|for|in|match|return|break|continue|pass)\\b"
+          "match": "\\b(if|elif|else|while|for|in|match|return|break|continue|pass|spawn|await)\\b"
         },
         {
           "name": "storage.type.rosegold",
@@ -138,7 +138,7 @@
         },
         {
           "name": "storage.modifier.rosegold",
-          "match": "\\b(pub)\\b"
+          "match": "\\b(pub|async)\\b"
         },
         {
           "name": "variable.language.rosegold",
@@ -150,7 +150,7 @@
       "patterns": [
         {
           "name": "support.type.builtin.rosegold",
-          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Option|Result|Vec2|Vec3)\\b"
+          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Option|Result|Vec2|Vec3|Mutex|Channel|Task|Fn)\\b"
         },
         {
           "name": "entity.name.type.rosegold",
@@ -174,10 +174,11 @@
       "patterns": [
         {
           "name": "meta.function.rosegold",
-          "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "begin": "(?:\\b(async)\\s+)?\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "beginCaptures": {
-            "1": { "name": "storage.type.function.rosegold" },
-            "2": { "name": "entity.name.function.rosegold" }
+            "1": { "name": "storage.modifier.async.rosegold" },
+            "2": { "name": "storage.type.function.rosegold" },
+            "3": { "name": "entity.name.function.rosegold" }
           },
           "end": "(?=\\{|;)"
         },

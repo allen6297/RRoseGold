@@ -19,6 +19,7 @@ rosegold run examples/process.rg hello
 rosegold run examples/tour.rg
 rosegold run examples/json.rg
 rosegold run examples/signals.rg
+rosegold run examples/concurrency.rg
 rosegold test examples/tests.rg
 rosegold
 ```
@@ -32,7 +33,7 @@ rosegold
 | `examples/` | Sample scripts |
 | `vscode/` | Language support for VS Code / Cursor |
 
-Host modules `io`, `time`, `process`, and `json` are native. Everything else in stdlib is `.rg`.
+Host modules `io`, `time`, `process`, `json`, `path`, `http`, and `regex` are native. Everything else in stdlib is `.rg`.
 
 `rosegold` with no command starts a REPL (each line is typechecked; `import` uses the current directory). `rosegold run file.rg args…` puts the script path and extra args in `process.argv()`. Runtime errors list the call stack with file names.
 

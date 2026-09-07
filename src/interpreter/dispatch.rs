@@ -1,9 +1,7 @@
 //! Call dispatch: builtins, instance methods, UFCS, and host modules
-//! (`io`, `time`, `process`, `json`, `__math`, `__str`).
+//! (`io`, `time`, `process`, `json`, `path`, `http`, `regex`, `__math`, `__str`).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::{RuntimeError, Span};
 
@@ -25,13 +23,19 @@ impl super::eval::EvalContext {
             return self.call_qualified(&module, &fn_name, args, span);
         }
         if let Some(Value::FnRef { name: fn_name }) = self.env.get(name) {
+            if let Some(decl) = self.lookup_fn(&fn_name) {
+                return self.invoke_user_fn(decl, args, span);
+            }
             return self.call_fn(&fn_name, args, span);
+        }
+        if let Some(Value::Closure(c)) = self.env.get(name) {
+            return self.call_closure(&c, args, span);
         }
         match name {
             "print" => {
                 let parts: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-                self.stdout.push_str(&parts.join(" "));
-                self.stdout.push('\n');
+                self.append_stdout(&parts.join(" "));
+                self.append_stdout("\n");
                 Ok(Value::Void)
             }
             "len" => {
@@ -40,8 +44,8 @@ impl super::eval::EvalContext {
                 }
                 match &args[0] {
                     Value::String(s) => Ok(Value::Int(string_char_len(s))),
-                    Value::Array(a) => Ok(Value::Int(a.borrow().len() as i64)),
-                    Value::Map(m) => Ok(Value::Int(m.borrow().len() as i64)),
+                    Value::Array(a) => Ok(Value::Int(lock(a).len() as i64)),
+                    Value::Map(m) => Ok(Value::Int(lock(m).len() as i64)),
                     _ => Err(runtime_err(
                         format!(
                             "len expects String, Array, or Map, got {}",
@@ -60,7 +64,19 @@ impl super::eval::EvalContext {
                 }
                 Ok(Value::Void)
             }
-            "Array" => Ok(Value::Array(Rc::new(RefCell::new(args)))),
+            "Array" => Ok(array_value(args)),
+            "Mutex" => {
+                if !args.is_empty() {
+                    return Err(runtime_err("Mutex takes 0 arguments".to_string(), span));
+                }
+                Ok(Value::Mutex(LangMutex::new()))
+            }
+            "Channel" => {
+                if !args.is_empty() {
+                    return Err(runtime_err("Channel takes 0 arguments".to_string(), span));
+                }
+                Ok(Value::Channel(LangChannel::new()))
+            }
             "Map" => {
                 if args.len() % 2 != 0 {
                     return Err(runtime_err(
@@ -84,11 +100,11 @@ impl super::eval::EvalContext {
                     };
                     map.insert(key, chunk[1].clone());
                 }
-                Ok(Value::Map(Rc::new(RefCell::new(map))))
+                Ok(map_value(map))
             }
             _ => {
-                if self.lookup_fn(name).is_some() {
-                    self.call_fn(name, args, span)
+                if let Some(decl) = self.lookup_fn(name) {
+                    self.invoke_user_fn(decl, args, span)
                 } else if let Some(object) = self.env.get("self") {
                     let type_name = match &object {
                         Value::Struct { name: n, .. } => Some(n.clone()),
@@ -142,19 +158,8 @@ impl super::eval::EvalContext {
                             span,
                         ));
                     }
-                    let listener = match &_args[0] {
-                        Value::FnRef { name } => name.clone(),
-                        other => {
-                            return Err(runtime_err(
-                                format!(
-                                    "signal '{signal}' connect expects a function, got {}",
-                                    other.type_name()
-                                ),
-                                span,
-                            ));
-                        }
-                    };
-                    self.connect_signal(&signal, &listener, arity, span)?;
+                    let listener = _args[0].clone();
+                    self.connect_signal(&signal, listener, arity, span)?;
                     return Ok(Value::Void);
                 }
                 _ => {
@@ -195,7 +200,7 @@ impl super::eval::EvalContext {
             if decl.is_ufcs {
                 let mut args = args;
                 args.insert(0, object.clone());
-                return self.call_fn_decl(&decl, args, span);
+                return self.invoke_user_fn(decl, args, span);
             }
         }
         Err(runtime_err(err, span))
@@ -227,15 +232,15 @@ impl super::eval::EvalContext {
                 ),
             },
             Value::Array(a) => match name {
-                "len" => Ok(Value::Int(a.borrow().len() as i64)),
+                "len" => Ok(Value::Int(lock(a).len() as i64)),
                 "push" => {
                     if _args.len() != 1 {
                         return Err(runtime_err("Array.push takes 1 argument".to_string(), span));
                     }
-                    a.borrow_mut().push(_args[0].clone());
+                    lock(a).push(_args[0].clone());
                     Ok(Value::Void)
                 }
-                "pop" => Ok(a.borrow_mut().pop().unwrap_or(Value::None)),
+                "pop" => Ok(lock(a).pop().unwrap_or(Value::None)),
                 "first" => {
                     if !_args.is_empty() {
                         return Err(runtime_err(
@@ -243,7 +248,7 @@ impl super::eval::EvalContext {
                             span,
                         ));
                     }
-                    Ok(a.borrow().first().cloned().unwrap_or(Value::None))
+                    Ok(lock(a).first().cloned().unwrap_or(Value::None))
                 }
                 "last" => {
                     if !_args.is_empty() {
@@ -252,7 +257,7 @@ impl super::eval::EvalContext {
                             span,
                         ));
                     }
-                    Ok(a.borrow().last().cloned().unwrap_or(Value::None))
+                    Ok(lock(a).last().cloned().unwrap_or(Value::None))
                 }
                 "contains" => {
                     if _args.len() != 1 {
@@ -261,7 +266,8 @@ impl super::eval::EvalContext {
                             span,
                         ));
                     }
-                    let found = a.borrow().iter().any(|v| value_eq(v, &_args[0]));
+                    let items: Vec<Value> = lock(a).clone();
+                    let found = items.iter().any(|v| value_eq(v, &_args[0]));
                     Ok(Value::Bool(found))
                 }
                 _ => self.ufcs_or_err(
@@ -273,7 +279,7 @@ impl super::eval::EvalContext {
                 ),
             },
             Value::Map(m) => match name {
-                "len" => Ok(Value::Int(m.borrow().len() as i64)),
+                "len" => Ok(Value::Int(lock(m).len() as i64)),
                 "has" => {
                     if _args.len() != 1 {
                         return Err(runtime_err("Map.has takes 1 argument".to_string(), span));
@@ -290,14 +296,13 @@ impl super::eval::EvalContext {
                             ));
                         }
                     };
-                    Ok(Value::Bool(m.borrow().contains_key(&key)))
+                    Ok(Value::Bool(lock(m).contains_key(&key)))
                 }
-                "keys" => Ok(Value::Array(Rc::new(RefCell::new(
-                    m.borrow()
-                        .keys()
-                        .map(|k| Value::String(k.clone()))
-                        .collect::<Vec<_>>(),
-                )))),
+                "keys" => {
+                    let keys: Vec<Value> =
+                        lock(m).keys().map(|k| Value::String(k.clone())).collect();
+                    Ok(array_value(keys))
+                }
                 "remove" => {
                     if _args.len() != 1 {
                         return Err(runtime_err("Map.remove takes 1 argument".to_string(), span));
@@ -314,7 +319,7 @@ impl super::eval::EvalContext {
                             ));
                         }
                     };
-                    Ok(m.borrow_mut().remove(&key).unwrap_or(Value::None))
+                    Ok(lock(m).remove(&key).unwrap_or(Value::None))
                 }
                 "insert" => {
                     if _args.len() != 2 {
@@ -335,7 +340,7 @@ impl super::eval::EvalContext {
                             ));
                         }
                     };
-                    m.borrow_mut().insert(key, _args[1].clone());
+                    lock(m).insert(key, _args[1].clone());
                     Ok(Value::Void)
                 }
                 _ => self.ufcs_or_err(
@@ -366,9 +371,15 @@ impl super::eval::EvalContext {
                     if _args.len() != 1 {
                         return Err(runtime_err("unwrap_or takes 1 argument".to_string(), span));
                     }
-                    match value {
-                        Some(v) => Ok((**v).clone()),
-                        None => Ok(_args[0].clone()),
+                    let present = (*module == "Option" && *variant == "Some")
+                        || (*module == "Result" && *variant == "Ok");
+                    if present {
+                        match value {
+                            Some(v) => Ok((**v).clone()),
+                            None => Ok(Value::Void),
+                        }
+                    } else {
+                        Ok(_args[0].clone())
                     }
                 }
                 _ => self.ufcs_or_err(
@@ -397,7 +408,7 @@ impl super::eval::EvalContext {
                     let value = if _args.len() == 1 {
                         _args[0].clone()
                     } else {
-                        Value::Array(Rc::new(RefCell::new(_args)))
+                        array_value(_args)
                     };
                     return Ok(Value::Enum {
                         module: e.name.clone(),
@@ -412,18 +423,18 @@ impl super::eval::EvalContext {
             }
             Value::Module(m) => {
                 let decl = {
-                    let m = m.borrow();
-                    m.functions.get(name).cloned()
+                    let borrowed = lock(m);
+                    borrowed.functions.get(name).cloned()
                 };
                 if let Some(decl) = decl {
-                    let fns = m.borrow().functions.clone();
+                    let fns = lock(m).functions.clone();
                     self.module_fns.push(fns);
-                    let result = self.call_fn_decl(&decl, _args, span);
+                    let result = self.invoke_user_fn(decl, _args, span);
                     self.module_fns.pop();
                     return result;
                 }
                 if _args.is_empty() {
-                    if let Some(value) = m.borrow().values.get(name) {
+                    if let Some(value) = lock(m).values.get(name) {
                         return Ok(value.clone());
                     }
                 }
@@ -432,6 +443,76 @@ impl super::eval::EvalContext {
                     span,
                 ))
             }
+            Value::Mutex(m) => match name {
+                "lock" => {
+                    if !_args.is_empty() {
+                        return Err(runtime_err(
+                            "Mutex.lock takes 0 arguments".to_string(),
+                            span,
+                        ));
+                    }
+                    m.lock().map_err(|e| runtime_err(e, span))?;
+                    Ok(Value::Void)
+                }
+                "unlock" => {
+                    if !_args.is_empty() {
+                        return Err(runtime_err(
+                            "Mutex.unlock takes 0 arguments".to_string(),
+                            span,
+                        ));
+                    }
+                    m.unlock().map_err(|e| runtime_err(e, span))?;
+                    Ok(Value::Void)
+                }
+                _ => Err(runtime_err(format!("Mutex has no method '{name}'"), span)),
+            },
+            Value::Channel(ch) => match name {
+                "send" => {
+                    if _args.len() != 1 {
+                        return Err(runtime_err(
+                            "Channel.send takes 1 argument".to_string(),
+                            span,
+                        ));
+                    }
+                    ch.send(_args[0].clone())
+                        .map_err(|e| runtime_err(e, span))?;
+                    Ok(Value::Void)
+                }
+                "recv" => {
+                    if !_args.is_empty() {
+                        return Err(runtime_err(
+                            "Channel.recv takes 0 arguments".to_string(),
+                            span,
+                        ));
+                    }
+                    Ok(ch.recv())
+                }
+                "close" => {
+                    if !_args.is_empty() {
+                        return Err(runtime_err(
+                            "Channel.close takes 0 arguments".to_string(),
+                            span,
+                        ));
+                    }
+                    ch.close();
+                    Ok(Value::Void)
+                }
+                "recv_timeout" => {
+                    let secs = expect_secs(&_args, span, "Channel.recv_timeout")?;
+                    Ok(match ch.recv_timeout(secs) {
+                        Some(v) => option_some(v),
+                        None => option_none(),
+                    })
+                }
+                _ => Err(runtime_err(format!("Channel has no method '{name}'"), span)),
+            },
+            Value::Task(handle) => match name {
+                "wait" => {
+                    let secs = expect_secs(&_args, span, "Task.wait")?;
+                    self.task_wait(handle, secs, span)
+                }
+                _ => Err(runtime_err(format!("Task has no method '{name}'"), span)),
+            },
             Value::Struct {
                 name: struct_name, ..
             } => self.ufcs_or_err(
@@ -609,7 +690,7 @@ impl super::eval::EvalContext {
                         .map(|p| Value::String(p.to_string()))
                         .collect()
                 };
-                Ok(Value::Array(Rc::new(RefCell::new(parts))))
+                Ok(array_value(parts))
             }
             ("__str", "slice") => {
                 if args.len() != 3 {
@@ -661,7 +742,7 @@ impl super::eval::EvalContext {
                             .lines()
                             .map(|line| Value::String(line.to_string()))
                             .collect();
-                        result_ok(Value::Array(Rc::new(RefCell::new(lines))))
+                        result_ok(array_value(lines))
                     }
                     Err(e) => result_err(e),
                 })
@@ -727,9 +808,36 @@ impl super::eval::EvalContext {
                 Ok(match io_list_dir(&path) {
                     Ok(names) => {
                         let values: Vec<Value> = names.into_iter().map(Value::String).collect();
-                        result_ok(Value::Array(Rc::new(RefCell::new(values))))
+                        result_ok(array_value(values))
                     }
                     Err(e) => result_err(e),
+                })
+            }
+            ("io", "read_stdin") => {
+                if !args.is_empty() {
+                    return Err(runtime_err(
+                        "io.read_stdin takes 0 arguments".to_string(),
+                        span,
+                    ));
+                }
+                Ok(match io_read_stdin() {
+                    Ok(content) => result_ok(Value::String(content)),
+                    Err(e) => result_err(e),
+                })
+            }
+            ("io", "read_line") => {
+                if !args.is_empty() {
+                    return Err(runtime_err(
+                        "io.read_line takes 0 arguments".to_string(),
+                        span,
+                    ));
+                }
+                Ok(match io_read_line() {
+                    Ok(Some(line)) => option_some(Value::String(line)),
+                    Ok(None) => option_none(),
+                    Err(e) => {
+                        return Err(runtime_err(e, span));
+                    }
                 })
             }
             ("time", "now") => {
@@ -745,7 +853,7 @@ impl super::eval::EvalContext {
                         span,
                     ));
                 }
-                Ok(Value::Float(self.started.elapsed_secs()))
+                Ok(Value::Float(self.shared.started.elapsed_secs()))
             }
             ("process", "argv") => {
                 if !args.is_empty() {
@@ -755,7 +863,7 @@ impl super::eval::EvalContext {
                     ));
                 }
                 let values: Vec<Value> = self.argv().iter().cloned().map(Value::String).collect();
-                Ok(Value::Array(Rc::new(RefCell::new(values))))
+                Ok(array_value(values))
             }
             ("process", "env") => {
                 if args.len() != 1 {
@@ -788,6 +896,19 @@ impl super::eval::EvalContext {
                 };
                 Err(exit_err(code, span))
             }
+            ("process", "run") => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "process.run takes 2 arguments".to_string(),
+                        span,
+                    ));
+                }
+                let cmd = expect_string_arg(&args, 0, "process.run", "command", span)?;
+                Ok(match process_run(&cmd, &args[1]) {
+                    Ok(stdout) => result_ok(Value::String(stdout)),
+                    Err(e) => result_err(e),
+                })
+            }
             ("json", "parse") => {
                 if args.len() != 1 {
                     return Err(runtime_err("json.parse takes 1 argument".to_string(), span));
@@ -810,6 +931,81 @@ impl super::eval::EvalContext {
                     Err(e) => result_err(e),
                 })
             }
+            ("path", "join") => {
+                if args.len() != 2 {
+                    return Err(runtime_err("path.join takes 2 arguments".to_string(), span));
+                }
+                let a = expect_string_arg(&args, 0, "path.join", "a", span)?;
+                let b = expect_string_arg(&args, 1, "path.join", "b", span)?;
+                Ok(Value::String(path_join(&a, &b)))
+            }
+            ("path", "dirname") => {
+                if args.len() != 1 {
+                    return Err(runtime_err(
+                        "path.dirname takes 1 argument".to_string(),
+                        span,
+                    ));
+                }
+                let p = expect_string_arg(&args, 0, "path.dirname", "path", span)?;
+                Ok(Value::String(path_dirname(&p)))
+            }
+            ("path", "ext") => {
+                if args.len() != 1 {
+                    return Err(runtime_err("path.ext takes 1 argument".to_string(), span));
+                }
+                let p = expect_string_arg(&args, 0, "path.ext", "path", span)?;
+                Ok(Value::String(path_ext(&p)))
+            }
+            ("http", "get") => {
+                if args.len() != 1 {
+                    return Err(runtime_err("http.get takes 1 argument".to_string(), span));
+                }
+                let url = expect_string_arg(&args, 0, "http.get", "url", span)?;
+                Ok(match http_get(&url) {
+                    Ok(body) => result_ok(Value::String(body)),
+                    Err(e) => result_err(e),
+                })
+            }
+            ("http", "post") => {
+                if args.len() != 2 {
+                    return Err(runtime_err("http.post takes 2 arguments".to_string(), span));
+                }
+                let url = expect_string_arg(&args, 0, "http.post", "url", span)?;
+                let body = expect_string_arg(&args, 1, "http.post", "body", span)?;
+                Ok(match http_post(&url, &body) {
+                    Ok(resp) => result_ok(Value::String(resp)),
+                    Err(e) => result_err(e),
+                })
+            }
+            ("regex", "is_match") => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "regex.is_match takes 2 arguments".to_string(),
+                        span,
+                    ));
+                }
+                let pattern = expect_string_arg(&args, 0, "regex.is_match", "pattern", span)?;
+                let text = expect_string_arg(&args, 1, "regex.is_match", "text", span)?;
+                Ok(match regex_is_match(&pattern, &text) {
+                    Ok(matched) => result_ok(Value::Bool(matched)),
+                    Err(e) => result_err(e),
+                })
+            }
+            ("regex", "find") => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "regex.find takes 2 arguments".to_string(),
+                        span,
+                    ));
+                }
+                let pattern = expect_string_arg(&args, 0, "regex.find", "pattern", span)?;
+                let text = expect_string_arg(&args, 1, "regex.find", "text", span)?;
+                Ok(match regex_find(&pattern, &text) {
+                    Ok(Some(s)) => result_ok(option_some(Value::String(s))),
+                    Ok(None) => result_ok(option_none()),
+                    Err(e) => result_err(e),
+                })
+            }
             ("Array", "first") => {
                 if args.len() != 1 {
                     return Err(runtime_err(
@@ -818,7 +1014,7 @@ impl super::eval::EvalContext {
                     ));
                 }
                 match &args[0] {
-                    Value::Array(a) => Ok(a.borrow().first().cloned().unwrap_or(Value::None)),
+                    Value::Array(a) => Ok(lock(a).first().cloned().unwrap_or(Value::None)),
                     _ => Err(runtime_err("Array.first expects Array".to_string(), span)),
                 }
             }
@@ -827,7 +1023,7 @@ impl super::eval::EvalContext {
                     return Err(runtime_err("Array.last takes 1 argument".to_string(), span));
                 }
                 match &args[0] {
-                    Value::Array(a) => Ok(a.borrow().last().cloned().unwrap_or(Value::None)),
+                    Value::Array(a) => Ok(lock(a).last().cloned().unwrap_or(Value::None)),
                     _ => Err(runtime_err("Array.last expects Array".to_string(), span)),
                 }
             }
@@ -839,9 +1035,10 @@ impl super::eval::EvalContext {
                     ));
                 }
                 match &args[0] {
-                    Value::Array(a) => Ok(Value::Bool(
-                        a.borrow().iter().any(|v| value_eq(v, &args[1])),
-                    )),
+                    Value::Array(a) => {
+                        let items: Vec<Value> = lock(a).clone();
+                        Ok(Value::Bool(items.iter().any(|v| value_eq(v, &args[1]))))
+                    }
                     _ => Err(runtime_err(
                         "Array.contains expects Array".to_string(),
                         span,
@@ -972,6 +1169,18 @@ impl super::eval::EvalContext {
             )),
         }
     }
+}
+
+fn expect_secs(args: &[Value], span: Span, who: &str) -> Result<f64, RuntimeError> {
+    if args.len() != 1 {
+        return Err(runtime_err(format!("{who} takes 1 argument"), span));
+    }
+    as_f64(&args[0]).ok_or_else(|| {
+        runtime_err(
+            format!("{who} expects Float seconds, got {}", args[0].type_name()),
+            span,
+        )
+    })
 }
 
 fn expect_string_arg(

@@ -230,6 +230,9 @@ impl Printer {
                 for m in &t.methods {
                     self.hashes(&m.leading);
                     self.pad();
+                    if m.is_async {
+                        self.write("async ");
+                    }
                     self.write("fn ");
                     self.write(&m.name);
                     self.write("(");
@@ -359,6 +362,9 @@ impl Printer {
         if f.is_ufcs {
             self.write("@ufcs\n");
             self.pad();
+        }
+        if f.is_async {
+            self.write("async ");
         }
         self.write("fn ");
         self.write(&f.name);
@@ -602,6 +608,35 @@ impl Printer {
                         return;
                     }
                 }
+                let trailing = args.last().and_then(|last| match &last.kind {
+                    ExprKind::Lambda {
+                        params,
+                        return_type,
+                        body,
+                    } if params.is_empty() && return_type.is_none() => Some(body),
+                    _ => None,
+                });
+                if let Some(body) = trailing {
+                    let regular = &args[..args.len() - 1];
+                    self.expr(callee, 14);
+                    // `foo { … }` when the only arg is a non-empty trailing lambda.
+                    // Keep `foo() {}` so an empty block is not reparsed as `Type {}`.
+                    if !regular.is_empty() {
+                        self.write("(");
+                        for (i, a) in regular.iter().enumerate() {
+                            if i > 0 {
+                                self.write(", ");
+                            }
+                            self.expr(a, 0);
+                        }
+                        self.write(")");
+                    } else if body.stmts.is_empty() {
+                        self.write("()");
+                    }
+                    self.write(" ");
+                    self.block(body);
+                    return;
+                }
                 self.expr(callee, 14);
                 self.write("(");
                 for (i, a) in args.iter().enumerate() {
@@ -704,6 +739,33 @@ impl Printer {
                 self.indent -= 1;
                 self.pad();
                 self.write("}");
+            }
+            ExprKind::Spawn(inner) => {
+                self.write("spawn ");
+                self.expr(inner, 14);
+            }
+            ExprKind::Await(inner) => {
+                self.write("await ");
+                self.expr(inner, 14);
+            }
+            ExprKind::Try(inner) => {
+                self.expr(inner, 14);
+                self.write("?");
+            }
+            ExprKind::Lambda {
+                params,
+                return_type,
+                body,
+            } => {
+                self.write("fn(");
+                self.params(params);
+                self.write(")");
+                if let Some(rt) = return_type {
+                    self.write(": ");
+                    self.ty(rt);
+                }
+                self.write(" ");
+                self.block(body);
             }
         }
     }
@@ -876,5 +938,16 @@ mod tests {
         .unwrap();
         assert!(out.contains("signal died();"), "{out}");
         assert!(out.contains("fn take_damage"), "{out}");
+    }
+
+    #[test]
+    fn format_trailing_closure_prefers_block() {
+        let src =
+            "fn main(): Int {\n    foo(fn() {\n        print(1);\n    });\n    return 0;\n}\n";
+        let out = format_source(src).unwrap();
+        assert!(out.contains("foo {"), "{out}");
+        assert!(!out.contains("fn()"), "{out}");
+        let again = format_source(&out).unwrap();
+        assert_eq!(out, again);
     }
 }

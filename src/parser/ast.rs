@@ -108,6 +108,7 @@ pub struct TraitMethod {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub leading: Vec<String>,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +146,7 @@ pub struct FnDecl {
     pub body: Block,
     pub is_test: bool,
     pub is_ufcs: bool,
+    pub is_async: bool,
     pub doc: Option<String>,
     pub leading: Vec<String>,
     pub is_pub: bool,
@@ -321,6 +323,15 @@ pub enum ExprKind {
     Match {
         expr: Box<Expr>,
         arms: Vec<MatchArm>,
+    },
+    Spawn(Box<Expr>),
+    Await(Box<Expr>),
+    /// Postfix `?` on a `Result`: unwrap `Ok` or return the `Err`.
+    Try(Box<Expr>),
+    Lambda {
+        params: Vec<Param>,
+        return_type: Option<Type>,
+        body: Block,
     },
 }
 

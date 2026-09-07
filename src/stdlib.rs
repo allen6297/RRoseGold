@@ -1,4 +1,4 @@
-//! Crate-embedded public stdlib (`.rg`). Host APIs (`io`, `time`, `process`, `json`) stay native.
+//! Crate-embedded public stdlib (`.rg`). Host APIs (`io`, `time`, `process`, `json`, `path`, `http`, `regex`) stay native.
 //! Trig / string search stay a thin primitive table (`__math`, `__str`).
 
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ pub fn sources_map() -> HashMap<String, String> {
 pub fn is_host_module(name: &str) -> bool {
     matches!(
         name,
-        "io" | "time" | "process" | "json" | "__math" | "__str"
+        "io" | "time" | "process" | "json" | "path" | "http" | "regex" | "__math" | "__str"
     )
 }
 

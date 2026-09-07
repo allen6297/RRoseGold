@@ -403,7 +403,10 @@ fn cmd_repl() -> i32 {
 Expressions print their value. Statements and declarations persist.
 Each line is typechecked. import looks in the current directory.
 import process;  process.argv()  process.env(\"PATH\")  process.exit(0)
-import json;     json.parse(text)  json.stringify(value)"
+import json;     json.parse(text)  json.stringify(value)
+import path;     path.join(a, b)  path.dirname(p)  path.ext(p)
+import http;     http.get(url)  http.post(url, body)
+import regex;    regex.is_match(pat, text)  regex.find(pat, text)"
                     );
                     continue;
                 }
@@ -436,7 +439,7 @@ import json;     json.parse(text)  json.stringify(value)"
 }
 
 fn flush_repl_stdout(session: &mut Session) {
-    let out = std::mem::take(&mut session.ctx.stdout);
+    let out = session.ctx.take_stdout();
     if !out.is_empty() {
         print!("{out}");
     }

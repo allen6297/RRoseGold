@@ -13,15 +13,14 @@ pub mod signal;
 pub mod stdlib;
 pub mod typecheck;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub use format::format_source;
 pub use interpreter::{
     CombinedResolver, EvalContext, FileModuleResolver, HashMapResolver, Module, ModuleResolver,
-    Value,
+    ResolverRef, Value,
 };
 pub use lexer::{Lexer, Token, TokenKind};
 pub use navigate::{SymbolInfo, def_at, hover_at, symbol_at};
@@ -325,7 +324,7 @@ impl RunResult {
         match result {
             Ok(_) => Self {
                 ok: true,
-                stdout: ctx.stdout.clone(),
+                stdout: ctx.stdout(),
                 stderr: String::new(),
                 message: "RoseGold finished".to_string(),
                 exit_code: 0,
@@ -334,7 +333,7 @@ impl RunResult {
                 if let Some(code) = e.exit_code {
                     Self {
                         ok: code == 0,
-                        stdout: ctx.stdout.clone(),
+                        stdout: ctx.stdout(),
                         stderr: String::new(),
                         message: if code == 0 {
                             "RoseGold finished".to_string()
@@ -347,7 +346,7 @@ impl RunResult {
                     let msg = e.to_string();
                     Self {
                         ok: false,
-                        stdout: ctx.stdout.clone(),
+                        stdout: ctx.stdout(),
                         stderr: msg.clone(),
                         message: msg,
                         exit_code: 1,
@@ -366,11 +365,36 @@ pub fn compile_source(source: &str) -> Result<Vec<Item>, String> {
     Ok(program)
 }
 
+fn typecheck_error_message(d: &Diagnostic) -> String {
+    if d.file.is_empty() {
+        format!("type error at {}:{}: {}", d.line, d.col, d.message)
+    } else {
+        format!(
+            "type error at {}:{}:{}: {}",
+            d.file, d.line, d.col, d.message
+        )
+    }
+}
+
 fn run_with_context(source: &str, ctx: &mut EvalContext) -> RunResult {
-    let program = match compile_source(source) {
-        Ok(program) => program,
+    let tokens = match Lexer::new(source).tokenize() {
+        Ok(t) => t,
         Err(e) => return RunResult::fail(e),
     };
+    let program = match Parser::new(tokens).parse() {
+        Ok(p) => p,
+        Err(e) => return RunResult::fail(e),
+    };
+    {
+        let resolver = ctx.resolver();
+        let r = resolver.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(d) = typecheck::typecheck_diagnostics_with(&program, Some(&*r))
+            .into_iter()
+            .next()
+        {
+            return RunResult::fail(typecheck_error_message(&d));
+        }
+    }
     let result = ctx.run(&program);
     RunResult::from_eval(ctx, result)
 }
@@ -388,7 +412,7 @@ pub fn run_source_with_argv(source: &str, argv: Vec<String>) -> RunResult {
 }
 
 pub fn run_source_with_modules(source: &str, modules: HashMap<String, String>) -> RunResult {
-    let resolver = Rc::new(RefCell::new(HashMapResolver::new(modules)));
+    let resolver = Arc::new(Mutex::new(HashMapResolver::new(modules)));
     let mut ctx = EvalContext::with_resolver(resolver);
     run_with_context(source, &mut ctx)
 }
@@ -404,7 +428,7 @@ pub fn run_file_with_argv(path: &Path, argv: Vec<String>) -> RunResult {
         Err(e) => return RunResult::fail(format!("failed to read file: {}", e)),
     };
     let base = path.parent().unwrap_or(Path::new("."));
-    let resolver = Rc::new(RefCell::new(FileModuleResolver::new(base)));
+    let resolver = Arc::new(Mutex::new(FileModuleResolver::new(base)));
     let mut ctx = EvalContext::with_resolver(resolver);
     ctx.set_argv(argv);
     ctx.set_source_file(source_label(path));
@@ -413,15 +437,13 @@ pub fn run_file_with_argv(path: &Path, argv: Vec<String>) -> RunResult {
 
 /// Run all `@test` functions in `source`. Does not call `main`.
 pub fn run_tests(source: &str) -> RunResult {
-    let resolver: Rc<RefCell<dyn ModuleResolver>> =
-        Rc::new(RefCell::new(HashMapResolver::new(HashMap::new())));
+    let resolver: ResolverRef = Arc::new(Mutex::new(HashMapResolver::new(HashMap::new())));
     run_tests_with_resolver(&source, resolver, String::new())
 }
 
 /// Same as `run_tests`, with in-memory `{ "utils": "…" }` modules.
 pub fn run_tests_with_modules(source: &str, modules: HashMap<String, String>) -> RunResult {
-    let resolver: Rc<RefCell<dyn ModuleResolver>> =
-        Rc::new(RefCell::new(HashMapResolver::new(modules)));
+    let resolver: ResolverRef = Arc::new(Mutex::new(HashMapResolver::new(modules)));
     run_tests_with_resolver(source, resolver, String::new())
 }
 
@@ -432,8 +454,7 @@ pub fn run_tests_file(path: &Path) -> RunResult {
         Err(e) => return RunResult::fail(format!("failed to read file: {}", e)),
     };
     let base = path.parent().unwrap_or(Path::new("."));
-    let resolver: Rc<RefCell<dyn ModuleResolver>> =
-        Rc::new(RefCell::new(FileModuleResolver::new(base)));
+    let resolver: ResolverRef = Arc::new(Mutex::new(FileModuleResolver::new(base)));
     run_tests_with_resolver(&source, resolver, source_label(path))
 }
 
@@ -444,11 +465,7 @@ fn source_label(path: &Path) -> String {
         .to_string()
 }
 
-fn run_tests_with_resolver(
-    source: &str,
-    resolver: Rc<RefCell<dyn ModuleResolver>>,
-    file: String,
-) -> RunResult {
+fn run_tests_with_resolver(source: &str, resolver: ResolverRef, file: String) -> RunResult {
     let mut lexer = Lexer::new(source);
     let tokens = match lexer.tokenize() {
         Ok(tokens) => tokens,
@@ -459,7 +476,7 @@ fn run_tests_with_resolver(
         Err(e) => return RunResult::fail(e),
     };
     {
-        let r = resolver.borrow();
+        let r = resolver.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(d) = typecheck::typecheck_diagnostics_with(&program, Some(&*r))
             .into_iter()
             .next()
@@ -492,7 +509,7 @@ fn run_tests_with_resolver(
         let msg = e.to_string();
         return RunResult {
             ok: false,
-            stdout: ctx.stdout.clone(),
+            stdout: ctx.stdout(),
             stderr: msg.clone(),
             message: msg,
             exit_code: 1,
@@ -503,11 +520,11 @@ fn run_tests_with_resolver(
     for name in &tests {
         match ctx.call(name, vec![]) {
             Ok(_) => {
-                ctx.stdout.push_str(&format!("ok {name}\n"));
+                ctx.append_stdout(&format!("ok {name}\n"));
             }
             Err(e) => {
                 failed += 1;
-                ctx.stdout.push_str(&format!("FAIL {name}: {e}\n"));
+                ctx.append_stdout(&format!("FAIL {name}: {e}\n"));
             }
         }
     }
@@ -515,11 +532,11 @@ fn run_tests_with_resolver(
     let total = tests.len();
     let passed = total - failed;
     let summary = format!("{passed}/{total} tests passed");
-    ctx.stdout.push_str(&summary);
-    ctx.stdout.push('\n');
+    ctx.append_stdout(&summary);
+    ctx.append_stdout("\n");
     RunResult {
         ok: failed == 0,
-        stdout: ctx.stdout.clone(),
+        stdout: ctx.stdout(),
         stderr: if failed == 0 {
             String::new()
         } else {

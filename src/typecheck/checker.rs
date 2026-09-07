@@ -16,6 +16,7 @@ struct FnSig {
     return_type: Option<Type>,
     is_ufcs: bool,
     takes_self: bool,
+    is_async: bool,
 }
 
 impl FnSig {
@@ -33,6 +34,7 @@ impl FnSig {
             return_type: f.return_type.clone(),
             is_ufcs: f.is_ufcs,
             takes_self,
+            is_async: f.is_async,
         }
     }
 
@@ -45,6 +47,7 @@ impl FnSig {
             return_type: f.return_type.clone(),
             is_ufcs: f.is_ufcs,
             takes_self: true,
+            is_async: f.is_async,
         }
     }
 
@@ -56,6 +59,7 @@ impl FnSig {
             return_type: m.return_type.clone(),
             is_ufcs: false,
             takes_self: true,
+            is_async: m.is_async,
         }
     }
 
@@ -66,6 +70,19 @@ impl FnSig {
             return_type: None,
             is_ufcs: false,
             takes_self: false,
+            is_async: false,
+        }
+    }
+
+    fn inner_return(&self) -> Option<String> {
+        self.return_type.as_ref().map(|t| t.name.clone())
+    }
+
+    fn call_return(&self) -> Option<String> {
+        if self.is_async {
+            Some("Task".to_string())
+        } else {
+            self.inner_return()
         }
     }
 
@@ -105,6 +122,8 @@ struct TypeChecker<'a> {
     class_spans: HashMap<String, Span>,
     /// Parent of the method currently being checked (`super.method`).
     current_super: Option<String>,
+    /// Return type name of the function / lambda currently being checked.
+    current_return: Option<String>,
     /// Module-scope `signal` name → payload arity.
     signals: HashMap<String, usize>,
     loading: HashSet<String>,
@@ -114,6 +133,10 @@ struct TypeChecker<'a> {
     scopes: Vec<HashMap<String, String>>,
     /// Module-scope `var` / `const` types.
     globals: HashMap<String, String>,
+    /// Diagnostic file label while checking an imported module (`util.rg`).
+    current_file: String,
+    /// Parsed user modules waiting for body checks (not host / crate stdlib).
+    pending_bodies: HashMap<String, Vec<(String, Vec<Item>)>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -125,6 +148,8 @@ impl<'a> TypeChecker<'a> {
         builtins.insert("assert", Some(1));
         builtins.insert("Array", None);
         builtins.insert("Map", None);
+        builtins.insert("Mutex", Some(0));
+        builtins.insert("Channel", Some(0));
         Self {
             functions: HashMap::new(),
             structs: HashMap::new(),
@@ -141,16 +166,20 @@ impl<'a> TypeChecker<'a> {
             parents: HashMap::new(),
             class_spans: HashMap::new(),
             current_super: None,
+            current_return: None,
             signals: HashMap::new(),
             loading: HashSet::new(),
             strict_imports,
             scopes: Vec::new(),
             globals: HashMap::new(),
+            current_file: String::new(),
+            pending_bodies: HashMap::new(),
         }
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
-        self.diagnostics.push(Diagnostic::error("", span, message));
+        self.diagnostics
+            .push(Diagnostic::error(&self.current_file, span, message));
     }
 
     fn bind(&mut self, name: String, ty: String) {
@@ -355,6 +384,8 @@ impl<'a> TypeChecker<'a> {
         for item in program {
             self.check_item(item);
         }
+
+        self.check_imported_module_bodies();
     }
 
     fn check_inheritance(&mut self) {
@@ -505,6 +536,15 @@ impl<'a> TypeChecker<'a> {
                             format!("impl {trait_name} for {type_name} is missing '{method}'"),
                         ),
                         Some(provided) => {
+                            if required_sig.is_async != provided.is_async {
+                                self.error(
+                                    span,
+                                    format!(
+                                        "{trait_name}.{method} expected {}fn",
+                                        if required_sig.is_async { "async " } else { "" }
+                                    ),
+                                );
+                            }
                             if let Some(expected) = required_sig.param_count {
                                 if provided.params.len() != expected {
                                     self.error(
@@ -550,6 +590,15 @@ impl<'a> TypeChecker<'a> {
                             format!("impl {trait_name} for {type_name} is missing '{method}'"),
                         ),
                         Some(provided) => {
+                            if required_sig.is_async != provided.is_async {
+                                self.error(
+                                    span,
+                                    format!(
+                                        "{trait_name}.{method} expected {}fn",
+                                        if required_sig.is_async { "async " } else { "" }
+                                    ),
+                                );
+                            }
                             if let (Some(expected), Some(got)) =
                                 (required_sig.param_count, provided.param_count)
                             {
@@ -757,7 +806,8 @@ impl<'a> TypeChecker<'a> {
 
         self.loading.insert(name.to_string());
         let mut fns = HashMap::new();
-        for (_key, source) in &parts {
+        let mut parsed: Vec<(String, Vec<Item>)> = Vec::new();
+        for (key, source) in &parts {
             let program = match parse_module_source(source) {
                 Ok(p) => p,
                 Err(e) => {
@@ -825,14 +875,88 @@ impl<'a> TypeChecker<'a> {
                     fns.insert(e.name.clone(), FnSig::loose(None));
                 }
             }
+            parsed.push((key.clone(), program));
         }
         self.user_modules.insert(name.to_string(), fns);
         self.loading.remove(name);
+        // Crate stdlib is already clean; checking it would re-report noise on every script.
+        if !crate::stdlib::is_embedded_stdlib(name) {
+            self.pending_bodies.insert(name.to_string(), parsed);
+        }
+    }
+
+    fn check_imported_module_bodies(&mut self) {
+        while !self.pending_bodies.is_empty() {
+            let pending = std::mem::take(&mut self.pending_bodies);
+            for (_name, parts) in pending {
+                self.check_user_module_parts(&parts);
+            }
+        }
+    }
+
+    /// Walk imported fn / method bodies with the same operator checks as the main file.
+    fn check_user_module_parts(&mut self, parts: &[(String, Vec<Item>)]) {
+        let saved_functions = std::mem::take(&mut self.functions);
+        let saved_aliases = std::mem::take(&mut self.module_aliases);
+        let saved_globals = std::mem::take(&mut self.globals);
+        let saved_signals = std::mem::take(&mut self.signals);
+        let saved_file = std::mem::take(&mut self.current_file);
+
+        for (_file, program) in parts {
+            for item in program {
+                self.register_module_check_env(item);
+            }
+        }
+        for (file, program) in parts {
+            self.current_file = file.clone();
+            for item in program {
+                self.check_item(item);
+            }
+        }
+
+        self.functions = saved_functions;
+        self.module_aliases = saved_aliases;
+        self.globals = saved_globals;
+        self.signals = saved_signals;
+        self.current_file = saved_file;
+    }
+
+    /// Locals needed to check a foreign module (imports, fns, globals). Types stay shared.
+    fn register_module_check_env(&mut self, item: &Item) {
+        match item {
+            Item::Import(i) => self.register_import(i),
+            Item::FnDecl(f) => {
+                self.functions.insert(f.name.clone(), FnSig::from_fn(f));
+            }
+            Item::VarDecl(v) => {
+                if let Some(ty) = self.binding_type_for_var(v) {
+                    self.globals.insert(v.name.clone(), ty);
+                }
+            }
+            Item::ConstDecl(c) => {
+                if let Some(ty) = c.ty.as_ref().filter(|t| !Self::type_is_skipped(t)) {
+                    self.globals.insert(c.name.clone(), ty.name.clone());
+                } else if let Some(ty) = self.infer_expr_type(&c.value) {
+                    self.globals.insert(c.name.clone(), ty);
+                }
+            }
+            Item::SignalDecl(s) => {
+                self.signals.insert(s.name.clone(), s.params.len());
+            }
+            Item::Mod(m) => {
+                for inner in &m.items {
+                    self.register_module_check_env(inner);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn check_fn(&mut self, f: &FnDecl, self_type: Option<&str>) {
         let prev_super = self.current_super.take();
         self.current_super = self_type.and_then(|t| self.parents.get(t).cloned());
+        let prev_return = self.current_return.take();
+        self.current_return = f.return_type.as_ref().map(|t| t.name.clone());
         self.scopes.push(HashMap::new());
         if let Some(ty) = self_type {
             self.bind("self".to_string(), ty.to_string());
@@ -859,6 +983,7 @@ impl<'a> TypeChecker<'a> {
         self.check_block(&f.body, f.return_type.as_ref());
         self.scopes.pop();
         self.current_super = prev_super;
+        self.current_return = prev_return;
     }
 
     fn check_var_decl(&mut self, v: &VarDecl) {
@@ -905,6 +1030,214 @@ impl<'a> TypeChecker<'a> {
         matches!((annotated, inferred), ("Float", "Int") | ("Int", "Float"))
     }
 
+    fn type_known(ty: Option<String>) -> Option<String> {
+        match ty {
+            Some(s) if !s.is_empty() && s != "None" && s != "Self" => Some(s),
+            _ => None,
+        }
+    }
+
+    fn is_numeric(ty: &str) -> bool {
+        matches!(ty, "Int" | "Float")
+    }
+
+    fn is_string(ty: &str) -> bool {
+        matches!(ty, "String" | "Str")
+    }
+
+    fn is_int(ty: &str) -> bool {
+        ty == "Int"
+    }
+
+    fn numeric_result(lt: &str, rt: &str) -> String {
+        if lt == "Float" || rt == "Float" {
+            "Float".to_string()
+        } else {
+            "Int".to_string()
+        }
+    }
+
+    fn infer_binop_type(&self, op: BinOp, lt: &str, rt: &str) -> Option<String> {
+        match op {
+            BinOp::Add if Self::is_numeric(lt) && Self::is_numeric(rt) => {
+                Some(Self::numeric_result(lt, rt))
+            }
+            BinOp::Add if Self::is_string(lt) && Self::is_string(rt) => Some("String".to_string()),
+            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                if Self::is_numeric(lt) && Self::is_numeric(rt) =>
+            {
+                Some(Self::numeric_result(lt, rt))
+            }
+            BinOp::IDiv if Self::is_int(lt) && Self::is_int(rt) => Some("Int".to_string()),
+            BinOp::Eq
+            | BinOp::Neq
+            | BinOp::Lt
+            | BinOp::Lte
+            | BinOp::Gt
+            | BinOp::Gte
+            | BinOp::And
+            | BinOp::Or => Some("Bool".to_string()),
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+                if Self::is_int(lt) && Self::is_int(rt) =>
+            {
+                Some("Int".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn check_binop(&mut self, span: Span, op: BinOp, left: &Expr, right: &Expr) {
+        let lt = Self::type_known(self.infer_expr_type(left));
+        let rt = Self::type_known(self.infer_expr_type(right));
+        match op {
+            BinOp::Add => match (lt.as_deref(), rt.as_deref()) {
+                (Some(l), Some(r))
+                    if (Self::is_numeric(l) && Self::is_numeric(r))
+                        || (Self::is_string(l) && Self::is_string(r)) => {}
+                (Some(l), Some(r)) => {
+                    self.error(span, format!("cannot add {l} and {r}"));
+                }
+                _ => {}
+            },
+            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                match (lt.as_deref(), rt.as_deref()) {
+                    (Some(l), Some(r)) if Self::is_numeric(l) && Self::is_numeric(r) => {}
+                    (Some(l), Some(r)) => {
+                        let verb = match op {
+                            BinOp::Sub => "subtract",
+                            BinOp::Mul => "multiply",
+                            BinOp::Div => "divide",
+                            _ => "modulo",
+                        };
+                        self.error(span, format!("cannot {verb} {l} and {r}"));
+                    }
+                    _ => {}
+                }
+            }
+            BinOp::IDiv => {
+                if lt.as_deref().is_some_and(|t| !Self::is_int(t))
+                    || rt.as_deref().is_some_and(|t| !Self::is_int(t))
+                {
+                    let l = lt.as_deref().unwrap_or("unknown");
+                    let r = rt.as_deref().unwrap_or("unknown");
+                    self.error(
+                        span,
+                        format!("integer division requires Int, got {l} and {r}"),
+                    );
+                }
+            }
+            BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte => match (lt.as_deref(), rt.as_deref())
+            {
+                (Some(l), Some(r)) if Self::is_numeric(l) && Self::is_numeric(r) => {}
+                (Some(l), Some(r)) => {
+                    self.error(span, format!("cannot compare {l} and {r}"));
+                }
+                _ => {}
+            },
+            BinOp::Eq | BinOp::Neq | BinOp::And | BinOp::Or => {}
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                if lt.as_deref().is_some_and(|t| !Self::is_int(t))
+                    || rt.as_deref().is_some_and(|t| !Self::is_int(t))
+                {
+                    self.error(span, "bitwise operators require Int");
+                }
+            }
+        }
+    }
+
+    fn check_index(&mut self, span: Span, object: &Expr, index: &Expr) {
+        let obj = Self::type_known(self.infer_expr_type(object));
+        let idx = Self::type_known(self.infer_expr_type(index));
+        match obj.as_deref() {
+            Some("Array" | "String" | "Str") => {
+                if let Some(i) = idx.as_deref() {
+                    if !Self::is_int(i) {
+                        self.error(
+                            span,
+                            format!("cannot index {} with {i}", obj.as_deref().unwrap()),
+                        );
+                    }
+                }
+            }
+            Some("Map") => {
+                if let Some(i) = idx.as_deref() {
+                    if !Self::is_string(i) {
+                        self.error(span, format!("cannot index Map with {i}"));
+                    }
+                }
+            }
+            Some(o) => {
+                let i = idx.as_deref().unwrap_or("unknown");
+                self.error(span, format!("cannot index {o} with {i}"));
+            }
+            None => {}
+        }
+    }
+
+    fn infer_iter_item_type(&self, iter: &Expr) -> String {
+        if matches!(&iter.kind, ExprKind::Range { .. }) {
+            return "Int".to_string();
+        }
+        if let ExprKind::Call { callee, args } = &iter.kind {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == "Array" {
+                    return self.infer_array_elem_type(args);
+                }
+            }
+        }
+        match Self::type_known(self.infer_expr_type(iter)).as_deref() {
+            Some("Map" | "String" | "Str") => "String".to_string(),
+            Some("Int") => "Int".to_string(),
+            _ => String::new(),
+        }
+    }
+
+    /// Homogeneous array literal of known types → that element type.
+    /// Mixed or unknown elements stay untyped on purpose.
+    fn infer_array_elem_type(&self, args: &[Expr]) -> String {
+        if args.is_empty() {
+            return String::new();
+        }
+        let mut elem: Option<String> = None;
+        for a in args {
+            let Some(t) = Self::type_known(self.infer_expr_type(a)) else {
+                return String::new();
+            };
+            match &elem {
+                None => elem = Some(t),
+                Some(prev) if Self::types_compatible(prev, &t) => {
+                    if prev == "Int" && t == "Float" {
+                        elem = Some(t);
+                    }
+                }
+                Some(_) => return String::new(),
+            }
+        }
+        elem.unwrap_or_default()
+    }
+
+    fn check_assign_op(&mut self, span: Span, op: AssignOp, left: &Expr, right: &Expr) {
+        match op {
+            AssignOp::Assign => {
+                let lt = Self::type_known(self.infer_expr_type(left));
+                let rt = Self::type_known(self.infer_expr_type(right));
+                if let (Some(l), Some(r)) = (lt.as_deref(), rt.as_deref()) {
+                    if !Self::types_compatible(l, r) {
+                        self.error(span, format!("cannot assign {r} to {l}"));
+                    }
+                }
+            }
+            AssignOp::Add => self.check_binop(span, BinOp::Add, left, right),
+            AssignOp::Sub => self.check_binop(span, BinOp::Sub, left, right),
+            AssignOp::Mul => self.check_binop(span, BinOp::Mul, left, right),
+            AssignOp::Div => self.check_binop(span, BinOp::Div, left, right),
+            AssignOp::Mod => self.check_binop(span, BinOp::Mod, left, right),
+            AssignOp::BitAnd => self.check_binop(span, BinOp::BitAnd, left, right),
+            AssignOp::BitOr => self.check_binop(span, BinOp::BitOr, left, right),
+            AssignOp::BitXor => self.check_binop(span, BinOp::BitXor, left, right),
+        }
+    }
+
     fn infer_expr_type(&self, expr: &Expr) -> Option<String> {
         match &expr.kind {
             ExprKind::Literal(Literal::Int(_)) => Some("Int".to_string()),
@@ -912,10 +1245,38 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Literal(Literal::String(_)) => Some("String".to_string()),
             ExprKind::Literal(Literal::Bool(_)) => Some("Bool".to_string()),
             ExprKind::Literal(Literal::None) => Some("None".to_string()),
-            ExprKind::Ident(name) => self.lookup_binding(name),
+            ExprKind::Ident(name) => self.lookup_binding(name).filter(|t| !t.is_empty()),
             ExprKind::StructLiteral { name, .. } => Some(name.clone()),
             ExprKind::FString(_) => Some("String".to_string()),
             ExprKind::Call { callee, .. } => self.infer_call_type(callee),
+            ExprKind::Binary { op, left, right } => {
+                let lt = self.infer_expr_type(left)?;
+                let rt = self.infer_expr_type(right)?;
+                self.infer_binop_type(*op, &lt, &rt)
+            }
+            ExprKind::Unary { op, expr: inner } => match op {
+                UnaryOp::Neg => {
+                    let ty = self.infer_expr_type(inner)?;
+                    Self::is_numeric(&ty).then_some(ty)
+                }
+                UnaryOp::Not => Some("Bool".to_string()),
+                UnaryOp::BitNot => {
+                    let ty = self.infer_expr_type(inner)?;
+                    Self::is_int(&ty).then_some("Int".to_string())
+                }
+            },
+            ExprKind::Spawn(_) => Some("Task".to_string()),
+            ExprKind::Await(inner) => self.infer_await_type(inner),
+            ExprKind::Lambda { .. } => Some("Fn".to_string()),
+            ExprKind::Try(_) => None,
+            ExprKind::Index { object, .. } => {
+                let obj = self.infer_expr_type(object)?;
+                match obj.as_str() {
+                    "String" | "Str" => Some("String".to_string()),
+                    "Array" | "Map" => None,
+                    _ => None,
+                }
+            }
             ExprKind::Member { object, .. } => {
                 if let ExprKind::Ident(mod_name) = &object.kind {
                     if self.enums.contains_key(mod_name) {
@@ -933,17 +1294,15 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Ident(name) => match name.as_str() {
                 "Array" => Some("Array".to_string()),
                 "Map" => Some("Map".to_string()),
+                "Mutex" => Some("Mutex".to_string()),
+                "Channel" => Some("Channel".to_string()),
                 _ => {
-                    if let Some(ty) = self
-                        .functions
-                        .get(name)
-                        .and_then(|s| s.return_type.as_ref().map(|t| t.name.clone()))
-                    {
+                    if let Some(ty) = self.functions.get(name).and_then(|s| s.call_return()) {
                         return Some(ty);
                     }
                     if let Some(recv) = self.receiver_type() {
                         if let Some(sig) = self.lookup_type_method(&recv, name) {
-                            return sig.return_type.as_ref().map(|t| t.name.clone());
+                            return sig.call_return();
                         }
                     }
                     None
@@ -954,8 +1313,8 @@ impl<'a> TypeChecker<'a> {
                     if self.enums.contains_key(mod_name) {
                         return Some(mod_name.clone());
                     }
-                    if let Some(ty) = self.qualified_return_type(mod_name, name) {
-                        return Some(ty);
+                    if let Some(sig) = self.qualified_fn_sig(mod_name, name) {
+                        return sig.call_return();
                     }
                     let canonical = self
                         .module_aliases
@@ -968,23 +1327,80 @@ impl<'a> TypeChecker<'a> {
                 }
                 let obj_ty = self.infer_expr_type(object)?;
                 if let Some(sig) = self.lookup_type_method(&obj_ty, name) {
-                    return sig.return_type.as_ref().map(|t| t.name.clone());
+                    return sig.call_return();
                 }
                 match (obj_ty.as_str(), name.as_str()) {
                     ("Array" | "String" | "Str" | "Map", "len") => Some("Int".to_string()),
                     ("Array", "first" | "last" | "pop") => None,
                     ("Map", "keys") => Some("Array".to_string()),
+                    ("Mutex", "lock" | "unlock") => Some("Void".to_string()),
+                    ("Channel", "send" | "close") => Some("Void".to_string()),
+                    ("Channel", "recv") => None,
+                    ("Channel", "recv_timeout") => Some("Option".to_string()),
+                    ("Task", "wait") => Some("Option".to_string()),
                     ("Option", "is_some" | "is_none") | ("Result", "is_ok" | "is_err") => {
                         Some("Bool".to_string())
                     }
                     _ => None,
                 }
             }
+            ExprKind::Lambda { return_type, .. } => Some(
+                return_type
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "Void".to_string()),
+            ),
             _ => None,
         }
     }
 
-    fn qualified_return_type(&self, mod_name: &str, name: &str) -> Option<String> {
+    fn infer_await_type(&self, inner: &Expr) -> Option<String> {
+        match &inner.kind {
+            ExprKind::Spawn(call) => match &call.kind {
+                ExprKind::Call { callee, .. } => self.callee_inner_return(callee),
+                ExprKind::Lambda { return_type, .. } => Some(
+                    return_type
+                        .as_ref()
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| "Void".to_string()),
+                ),
+                _ => None,
+            },
+            ExprKind::Call { callee, .. } => self.callee_inner_return(callee),
+            ExprKind::Lambda { return_type, .. } => Some(
+                return_type
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "Void".to_string()),
+            ),
+            _ => None,
+        }
+    }
+
+    fn callee_inner_return(&self, callee: &Expr) -> Option<String> {
+        match &callee.kind {
+            ExprKind::Ident(name) => self.functions.get(name).and_then(|s| s.inner_return()),
+            ExprKind::Lambda { return_type, .. } => Some(
+                return_type
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "Void".to_string()),
+            ),
+            ExprKind::Member { object, name } => {
+                if let ExprKind::Ident(mod_name) = &object.kind {
+                    if let Some(sig) = self.qualified_fn_sig(mod_name, name) {
+                        return sig.inner_return();
+                    }
+                }
+                let obj_ty = self.infer_expr_type(object)?;
+                self.lookup_type_method(&obj_ty, name)
+                    .and_then(|s| s.inner_return())
+            }
+            _ => None,
+        }
+    }
+
+    fn qualified_fn_sig(&self, mod_name: &str, name: &str) -> Option<&FnSig> {
         let canonical = self
             .module_aliases
             .get(mod_name)
@@ -995,7 +1411,6 @@ impl<'a> TypeChecker<'a> {
             .get(load_name)
             .or_else(|| self.user_modules.get(&canonical))
             .and_then(|fns| fns.get(name))
-            .and_then(|s| s.return_type.as_ref().map(|t| t.name.clone()))
     }
 
     fn known_receiver(&self, ty: &str) -> bool {
@@ -1017,6 +1432,10 @@ impl<'a> TypeChecker<'a> {
                         | "Float"
                         | "Bool"
                         | "None"
+                        | "Mutex"
+                        | "Channel"
+                        | "Task"
+                        | "Fn"
                 ))
     }
 
@@ -1065,7 +1484,7 @@ impl<'a> TypeChecker<'a> {
             StmtKind::For { name, iter, body } => {
                 self.walk_expr(iter);
                 self.scopes.push(HashMap::new());
-                self.bind(name.clone(), "Int".to_string());
+                self.bind(name.clone(), self.infer_iter_item_type(iter));
                 self.check_block(body, return_type);
                 self.scopes.pop();
             }
@@ -1098,22 +1517,20 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Binary { op, left, right } => {
                 self.walk_expr(left);
                 self.walk_expr(right);
-                if matches!(
-                    op,
-                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
-                ) {
-                    let lt = self.infer_expr_type(left);
-                    let rt = self.infer_expr_type(right);
-                    if lt.as_deref() == Some("Float") || rt.as_deref() == Some("Float") {
-                        self.error(expr.span, "bitwise operators require Int");
-                    }
-                }
+                self.check_binop(expr.span, *op, left, right);
             }
             ExprKind::Unary { op, expr: inner } => {
                 self.walk_expr(inner);
-                if *op == UnaryOp::BitNot && self.infer_expr_type(inner).as_deref() == Some("Float")
-                {
-                    self.error(expr.span, "bitwise not requires Int");
+                if let Some(ty) = Self::type_known(self.infer_expr_type(inner)) {
+                    match op {
+                        UnaryOp::Neg if !Self::is_numeric(&ty) => {
+                            self.error(expr.span, format!("cannot negate {ty}"));
+                        }
+                        UnaryOp::BitNot if !Self::is_int(&ty) => {
+                            self.error(expr.span, "bitwise not requires Int");
+                        }
+                        _ => {}
+                    }
                 }
             }
             ExprKind::Call { callee, args } => {
@@ -1137,6 +1554,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Index { object, index } => {
                 self.walk_expr(object);
                 self.walk_expr(index);
+                self.check_index(expr.span, object, index);
             }
             ExprKind::StructLiteral { name, fields } => {
                 let known = self.class_fields.contains_key(name) || self.structs.contains_key(name);
@@ -1150,13 +1568,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Assign { op, left, right } => {
                 self.walk_expr(left);
                 self.walk_expr(right);
-                if matches!(op, AssignOp::BitAnd | AssignOp::BitOr | AssignOp::BitXor) {
-                    let lt = self.infer_expr_type(left);
-                    let rt = self.infer_expr_type(right);
-                    if lt.as_deref() == Some("Float") || rt.as_deref() == Some("Float") {
-                        self.error(expr.span, "bitwise operators require Int");
-                    }
-                }
+                self.check_assign_op(expr.span, *op, left, right);
             }
             ExprKind::FString(parts) => {
                 for part in parts {
@@ -1168,6 +1580,13 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Range { start, end, .. } => {
                 self.walk_expr(start);
                 self.walk_expr(end);
+                for (side, e) in [("start", start.as_ref()), ("end", end.as_ref())] {
+                    if let Some(ty) = Self::type_known(self.infer_expr_type(e)) {
+                        if !Self::is_int(&ty) {
+                            self.error(expr.span, format!("range {side} must be Int, got {ty}"));
+                        }
+                    }
+                }
             }
             ExprKind::Match {
                 expr: scrutinee,
@@ -1181,7 +1600,53 @@ impl<'a> TypeChecker<'a> {
                     self.scopes.pop();
                 }
             }
+            ExprKind::Spawn(inner) => self.walk_expr(inner),
+            ExprKind::Await(inner) => {
+                self.walk_expr(inner);
+                if let Some(ty) = Self::type_known(self.infer_expr_type(inner)) {
+                    if ty != "Task" {
+                        self.error(expr.span, format!("await expects Task, got {ty}"));
+                    }
+                }
+            }
+            ExprKind::Try(inner) => {
+                self.walk_expr(inner);
+                if let Some(ty) = Self::type_known(self.infer_expr_type(inner)) {
+                    if ty != "Result" {
+                        self.error(expr.span, format!("? expects Result, got {ty}"));
+                    }
+                }
+                match self.current_return.as_deref() {
+                    Some("Result") => {}
+                    Some(rt) => self.error(
+                        expr.span,
+                        format!("? requires the function to return Result, got {rt}"),
+                    ),
+                    None => self.error(expr.span, "? requires the function to return Result"),
+                }
+            }
+            ExprKind::Lambda {
+                params,
+                return_type,
+                body,
+            } => self.check_lambda(params, return_type.as_ref(), body),
         }
+    }
+
+    fn check_lambda(&mut self, params: &[Param], return_type: Option<&Type>, body: &Block) {
+        let prev_return = self.current_return.take();
+        self.current_return = return_type.map(|t| t.name.clone());
+        self.scopes.push(HashMap::new());
+        for p in params {
+            if !Self::type_is_skipped(&p.ty) {
+                self.bind(p.name.clone(), p.ty.name.clone());
+            } else {
+                self.bind(p.name.clone(), String::new());
+            }
+        }
+        self.check_block(body, return_type);
+        self.scopes.pop();
+        self.current_return = prev_return;
     }
 
     fn check_call(&mut self, callee: &Expr, args: &[Expr]) {
@@ -1215,7 +1680,18 @@ impl<'a> TypeChecker<'a> {
                         return;
                     }
                 }
+                if self.lookup_binding(name).as_deref() == Some("Fn") {
+                    return;
+                }
                 self.error(callee.span, format!("undefined function '{}'", name));
+            }
+            ExprKind::Lambda { params, .. } => {
+                if arg_count != params.len() {
+                    self.error(
+                        callee.span,
+                        format!("fn() expected {} args, got {}", params.len(), arg_count),
+                    );
+                }
             }
             ExprKind::Member { object, name } => {
                 if matches!(name.as_str(), "emit" | "connect") {
@@ -1300,29 +1776,50 @@ impl<'a> TypeChecker<'a> {
                 );
                 return;
             }
-            let Some(ExprKind::Ident(listener)) = args.first().map(|a| &a.kind) else {
-                self.error(span, format!("{sig}.connect expects a function name"));
-                return;
-            };
-            let Some(fn_sig) = self.functions.get(listener).cloned() else {
-                self.error(span, format!("undefined function '{listener}'"));
-                return;
-            };
-            if fn_sig.takes_self {
-                self.error(
-                    span,
-                    format!("{sig}.connect expects a free function, got method '{listener}'"),
-                );
-                return;
-            }
-            if let Some(got) = fn_sig.call_arity() {
-                if got != arity {
-                    self.error(
-                        span,
-                        format!(
-                            "{listener} expected {arity} args to connect to '{sig}', got {got}"
-                        ),
-                    );
+            let arg = args.first().unwrap();
+            match &arg.kind {
+                ExprKind::Ident(listener) => {
+                    let Some(fn_sig) = self.functions.get(listener).cloned() else {
+                        if self.lookup_binding(listener).as_deref() != Some("Fn") {
+                            self.error(span, format!("undefined function '{listener}'"));
+                        }
+                        return;
+                    };
+                    if fn_sig.takes_self {
+                        self.error(
+                            span,
+                            format!(
+                                "{sig}.connect expects a free function, got method '{listener}'"
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some(got) = fn_sig.call_arity() {
+                        if got != arity {
+                            self.error(
+                                span,
+                                format!(
+                                    "{listener} expected {arity} args to connect to '{sig}', got {got}"
+                                ),
+                            );
+                        }
+                    }
+                }
+                ExprKind::Lambda { params, .. } => {
+                    if params.len() != arity {
+                        self.error(
+                            span,
+                            format!(
+                                "fn() expected {arity} args to connect to '{sig}', got {}",
+                                params.len()
+                            ),
+                        );
+                    }
+                }
+                _ => {
+                    if self.infer_expr_type(arg).as_deref() != Some("Fn") {
+                        self.error(span, format!("{sig}.connect expects a function"));
+                    }
                 }
             }
         }
@@ -1458,7 +1955,13 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
-        self.try_load_user_module(&canonical, span);
+        // `Shape.Circle` is an enum variant, not `import Shape`.
+        if !self.enums.contains_key(&canonical)
+            && !self.structs.contains_key(&canonical)
+            && !self.traits.contains_key(&canonical)
+        {
+            self.try_load_user_module(&canonical, span);
+        }
         let load_name = crate::stdlib::canonical_module(&canonical).unwrap_or(canonical.as_str());
 
         if let Some(variants) = self

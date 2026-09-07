@@ -43,6 +43,9 @@ const KEYWORDS = [
   "self",
   "super",
   "signal",
+  "spawn",
+  "await",
+  "async",
 ];
 const CONSTANTS = ["true", "false", "none"];
 const TYPES = [
@@ -58,6 +61,10 @@ const TYPES = [
   "Result",
   "Vec2",
   "Vec3",
+  "Mutex",
+  "Channel",
+  "Task",
+  "Fn",
 ];
 
 const KIND = {
@@ -724,7 +731,7 @@ function documentSymbols(doc) {
   const text = doc.getText();
   const symbols = [];
   const patterns = [
-    { re: /^[ \t]*(?:pub[ \t]+)?fn[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Function },
+    { re: /^[ \t]*(?:pub[ \t]+)?(?:async[ \t]+)?fn[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Function },
     { re: /^[ \t]*(?:pub[ \t]+)?struct[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Struct },
     { re: /^[ \t]*(?:pub[ \t]+)?class[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Class },
     { re: /^[ \t]*(?:pub[ \t]+)?trait[ \t]+([A-Za-z_][A-Za-z0-9_]*)/gm, kind: vscode.SymbolKind.Interface },

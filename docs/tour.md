@@ -8,7 +8,7 @@ rosegold run examples/tour.rg
 rosegold test examples/tests.rg
 ```
 
-Types: `Int`, `Float`, `String` (alias `Str`), `Bool`, `Void`, `Array`, `Map`, `Option`, `Result`. `none` is the missing value.
+Types: `Int`, `Float`, `String` (alias `Str`), `Bool`, `Void`, `Array`, `Map`, `Option`, `Result`, `Mutex`, `Channel`, `Task`. `none` is the missing value.
 
 ## Values and control flow
 
@@ -37,7 +37,7 @@ fn main(): Int {
 }
 ```
 
-`0..5` is exclusive of 5; `1..=3` is inclusive. Arrays and maps: `[1, 2]`, `{"a": 1}`. `len(xs)`, `xs.len()`, `xs.push(x)`, `m.has(key)`, `m[key] = v`. F-strings: `f"x={x}"`, `f"{pi:.2f}"`.
+`0..5` is exclusive of 5; `1..=3` is inclusive. Arrays and maps: `[1, 2]`, `{"a": 1}`. `len(xs)`, `xs.len()`, `xs.push(x)`, `m.has(key)`, `m[key] = v`. F-strings: `f"x={x}"`, `f"{pi:.2f}"`. `for x in [1, 2]` types `x` as `Int` (homogeneous array literal). `for x in xs` when `xs` is `Array` leaves `x` untyped, so operator checks stay quiet.
 
 ## Functions, tests, UFCS
 
@@ -87,7 +87,7 @@ fn main(): Int {
 }
 ```
 
-`unwrap` / `is_some` / `is_ok` exist. Today `unwrap_or` is Int-only.
+`unwrap` / `is_some` / `is_ok` / `unwrap_or` exist. `unwrap_or` accepts any fallback type. On a `Result`, postfix `?` unwraps `Ok` or returns that `Err` from the enclosing function (which should return `Result`).
 
 ## Signals
 
@@ -154,13 +154,88 @@ Require `import`:
 
 | Module | Role |
 |---|---|
-| `io` | `read_text` / `write_text` / `exists` / `mkdir` / … (many return `Result`) |
+| `io` | `read_text` / `write_text` / `exists` / `mkdir` / `read_stdin()` / `read_line()` / … (many return `Result`) |
 | `time` | `now()` Unix seconds; `elapsed()` since this VM started |
-| `process` | `argv()`, `env(name)`, `exit(code)` |
+| `process` | `argv()`, `env(name)`, `exit(code)`, `run(cmd, args)` → `Result` (stdout or error) |
 | `json` | `parse(text)` / `stringify(value)` → `Result` |
+| `path` | `join(a, b)`, `dirname(p)`, `ext(p)` |
+| `http` | `get(url)` / `post(url, body)` → `Result` (body or error) |
+| `regex` | `is_match(pattern, text)` / `find(pattern, text)` → `Result` |
 
 JSON objects become `Map`, arrays `Array`, `null` becomes `none`. `Option.None` stringifies as `null`.
 
 Crate `.rg` stdlib: `math`, `str`, `vec`, `option`, `result`, `checks`.
 
-Runnable walkthrough: [`examples/tour.rg`](../examples/tour.rg). JSON only: [`examples/json.rg`](../examples/json.rg).
+## Concurrency
+
+`spawn call(...)` starts an OS thread and returns a `Task`. `await` waits for that task and yields its return value. Calling an `async fn` as an expression does the same thing: it returns a `Task` without writing `spawn`. `main` and `@test` still run inline, so `await` inside them yields the inner value. Heap objects passed as arguments are shared (arrays, maps, instances). Use `Mutex` for multi-step updates and `Channel` to send values between tasks.
+
+`ch.close()` stops new sends (`send` after close is a runtime error). `recv` still drains queued values, then returns `none` instead of blocking. `ch.recv_timeout(seconds)` and `task.wait(seconds)` return `Option` (`None` on timeout). Deadlock is possible: two tasks `await` each other, or two mutexes locked in opposite order — the VM does not detect that.
+
+```rg
+fn hang(ch: Channel) {
+    ch.recv();
+}
+
+fn main(): Int {
+    var ch = Channel();
+    ch.send(1);
+    ch.close();
+    print(ch.recv());
+    print(ch.recv());
+
+    var stuck = Channel();
+    var t = spawn hang(stuck);
+    print(t.wait(0.05).is_none());
+    stuck.close();
+    await t;
+    return 0;
+}
+```
+
+```rg
+async fn add(a: Int, b: Int): Int {
+    return a + b;
+}
+
+fn bump(xs: Array, lock: Mutex) {
+    lock.lock();
+    xs.push(1);
+    lock.unlock();
+}
+
+fn main(): Int {
+    print(await add(2, 3));
+    var t = add(1, 1);
+    print(await t);
+
+    var xs = [];
+    var lock = Mutex();
+    var u = spawn bump(xs, lock);
+    bump(xs, lock);
+    await u;
+    print(xs.len());
+    return 0;
+}
+```
+
+`spawn` accepts a call (`spawn bump(xs, lock)`) or a lambda (`spawn fn() { … }`). `spawn async_fn()` still starts one task (not a Task of a Task). If `main` returns while tasks are still running, the VM joins them. `io` stays blocking: it only stalls that thread. `await` is allowed in any function.
+
+## Closures
+
+`fn(params) { … }` is an expression. It closes over locals: reads and writes the same bindings as the enclosing function. Pass it to `connect`, store it in a `var`, or `spawn` it. The last argument of a call may be a `{ }` block (`foo(1) { … }`, `column { … }`) — a zero-param lambda.
+
+```rg
+fn main(): Int {
+    var n: Int = 0;
+    var bump = fn() { n = n + 1; };
+    bump();
+    print(n);
+    var t = spawn fn() { n = n + 1; };
+    await t;
+    print(n);
+    return 0;
+}
+```
+
+Runnable walkthrough: [`examples/tour.rg`](../examples/tour.rg). JSON only: [`examples/json.rg`](../examples/json.rg). Concurrency: [`examples/concurrency.rg`](../examples/concurrency.rg).

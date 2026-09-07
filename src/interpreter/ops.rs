@@ -1,4 +1,4 @@
-//! Runtime helpers: arithmetic, bitwise ops, equality, formatting, and `io`.
+//! Runtime helpers: arithmetic, bitwise ops, equality, formatting, and host I/O.
 
 use crate::parser::AssignOp;
 use crate::{RuntimeError, Span};
@@ -74,16 +74,24 @@ pub(super) fn value_eq(a: &Value, b: &Value) -> bool {
         (Value::None, Value::None) => true,
         (Value::Void, Value::Void) => true,
         (Value::Array(a), Value::Array(b)) => {
-            let a = a.borrow();
-            let b = b.borrow();
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| value_eq(x, y))
+            if std::sync::Arc::ptr_eq(a, b) {
+                true
+            } else {
+                let a = lock(a).clone();
+                let b = lock(b).clone();
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| value_eq(x, y))
+            }
         }
         (Value::Map(a), Value::Map(b)) => {
-            let a = a.borrow();
-            let b = b.borrow();
-            a.len() == b.len()
-                && a.iter()
-                    .all(|(k, v)| b.get(k).map(|bv| value_eq(v, bv)).unwrap_or(false))
+            if std::sync::Arc::ptr_eq(a, b) {
+                true
+            } else {
+                let a = lock(a).clone();
+                let b = lock(b).clone();
+                a.len() == b.len()
+                    && a.iter()
+                        .all(|(k, v)| b.get(k).map(|bv| value_eq(v, bv)).unwrap_or(false))
+            }
         }
         (
             Value::Enum {
@@ -630,16 +638,13 @@ fn json_to_value(v: &serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            let items: Vec<Value> = arr.iter().map(json_to_value).collect();
-            Value::Array(std::rc::Rc::new(std::cell::RefCell::new(items)))
-        }
+        serde_json::Value::Array(arr) => array_value(arr.iter().map(json_to_value).collect()),
         serde_json::Value::Object(obj) => {
             let mut map = std::collections::HashMap::new();
             for (k, val) in obj {
                 map.insert(k.clone(), json_to_value(val));
             }
-            Value::Map(std::rc::Rc::new(std::cell::RefCell::new(map)))
+            map_value(map)
         }
     }
 }
@@ -655,22 +660,31 @@ fn json_from_value(v: &Value) -> Result<serde_json::Value, String> {
         Value::None | Value::Void => Ok(serde_json::Value::Null),
         Value::Array(a) => {
             let mut arr = Vec::new();
-            for item in a.borrow().iter() {
-                arr.push(json_from_value(item)?);
+            let items: Vec<Value> = lock(a).clone();
+            for item in items {
+                arr.push(json_from_value(&item)?);
             }
             Ok(serde_json::Value::Array(arr))
         }
         Value::Map(m) => {
             let mut obj = serde_json::Map::new();
-            for (k, val) in m.borrow().iter() {
-                obj.insert(k.clone(), json_from_value(val)?);
+            let entries: Vec<(String, Value)> = lock(m)
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (k, val) in entries {
+                obj.insert(k, json_from_value(&val)?);
             }
             Ok(serde_json::Value::Object(obj))
         }
         Value::Struct { fields, .. } => {
             let mut obj = serde_json::Map::new();
-            for (k, val) in fields.borrow().iter() {
-                obj.insert(k.clone(), json_from_value(val)?);
+            let entries: Vec<(String, Value)> = lock(fields)
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (k, val) in entries {
+                obj.insert(k, json_from_value(&val)?);
             }
             Ok(serde_json::Value::Object(obj))
         }
@@ -715,4 +729,176 @@ pub(super) fn process_env(name: &str) -> Option<String> {
     {
         std::env::var(name).ok()
     }
+}
+
+pub(super) fn process_run(cmd: &str, args: &Value) -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (cmd, args);
+        Err("process.run is not supported on this target".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let arg_strs = match args {
+            Value::Array(a) => {
+                let items = lock(a);
+                let mut out = Vec::with_capacity(items.len());
+                for v in items.iter() {
+                    match v {
+                        Value::String(s) => out.push(s.clone()),
+                        other => {
+                            return Err(format!(
+                                "process.run args must be String, got {}",
+                                other.type_name()
+                            ));
+                        }
+                    }
+                }
+                out
+            }
+            other => {
+                return Err(format!(
+                    "process.run expects Array args, got {}",
+                    other.type_name()
+                ));
+            }
+        };
+        let output = std::process::Command::new(cmd)
+            .args(&arg_strs)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let code = output.status.code().unwrap_or(-1);
+            if stderr.trim().is_empty() {
+                Err(format!("exit {code}"))
+            } else {
+                Err(format!("exit {code}: {}", stderr.trim()))
+            }
+        }
+    }
+}
+
+pub(super) fn io_read_stdin() -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err("io.read_stdin is not supported on this target".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| e.to_string())?;
+        Ok(buf)
+    }
+}
+
+/// One line from stdin without the trailing newline. `None` on EOF.
+pub(super) fn io_read_line() -> Result<Option<String>, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err("io.read_line is not supported on this target".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let n = std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(None);
+        }
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        Ok(Some(line))
+    }
+}
+
+pub(super) fn path_join(a: &str, b: &str) -> String {
+    std::path::Path::new(a)
+        .join(b)
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(super) fn path_dirname(p: &str) -> String {
+    match std::path::Path::new(p).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_string_lossy().into_owned(),
+        Some(_) => ".".to_string(),
+        None => {
+            if p.is_empty() {
+                ".".to_string()
+            } else {
+                p.to_string()
+            }
+        }
+    }
+}
+
+pub(super) fn path_ext(p: &str) -> String {
+    std::path::Path::new(p)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+pub(super) fn http_get(url: &str) -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = url;
+        Err("http is not supported on this target".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        http_call("GET", url, None)
+    }
+}
+
+pub(super) fn http_post(url: &str, body: &str) -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (url, body);
+        Err("http is not supported on this target".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        http_call("POST", url, Some(body))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_call(method: &str, url: &str, body: Option<&str>) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirects(5)
+        .build();
+    let result = match (method, body) {
+        ("POST", Some(b)) => agent.post(url).send_string(b),
+        _ => agent.get(url).call(),
+    };
+    match result {
+        Ok(resp) => resp.into_string().map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub(super) fn regex_is_match(pattern: &str, text: &str) -> Result<bool, String> {
+    let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
+    Ok(re.is_match(text))
+}
+
+pub(super) fn regex_find(pattern: &str, text: &str) -> Result<Option<String>, String> {
+    let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
+    Ok(re.find(text).map(|m| m.as_str().to_string()))
 }

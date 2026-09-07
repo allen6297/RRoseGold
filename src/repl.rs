@@ -1,14 +1,13 @@
 //! Line-oriented eval for the CLI REPL. Typechecks each line against prior bindings.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-use crate::interpreter::{CombinedResolver, EvalContext, ModuleResolver, Value};
+use crate::Diagnostic;
+use crate::interpreter::{CombinedResolver, EvalContext, ResolverRef, Value};
 use crate::lexer::Lexer;
 use crate::parser::{Item, Parser, parse_expr_from_str};
 use crate::typecheck::{typecheck_diagnostics_with, typecheck_expr_diagnostics_with};
-use crate::Diagnostic;
 
 #[derive(Debug)]
 pub enum LineResult {
@@ -39,8 +38,8 @@ impl Session {
     /// Resolve `import` against the process working directory.
     pub fn with_cwd() -> Self {
         let cwd = std::env::current_dir().ok();
-        let resolver: Rc<RefCell<dyn ModuleResolver>> =
-            Rc::new(RefCell::new(CombinedResolver::new(HashMap::new(), cwd)));
+        let resolver: ResolverRef =
+            Arc::new(Mutex::new(CombinedResolver::new(HashMap::new(), cwd)));
         let mut ctx = EvalContext::with_resolver(resolver);
         ctx.set_argv(vec!["<repl>".into()]);
         Self::with_context(ctx)
@@ -128,13 +127,13 @@ fn check_with_session(session: &Session, extra: &[Item]) -> Vec<Diagnostic> {
     let mut program = session.items.clone();
     program.extend(extra.iter().cloned());
     let resolver = session.ctx.resolver();
-    let borrowed = resolver.borrow();
+    let borrowed = resolver.lock().unwrap_or_else(|p| p.into_inner());
     typecheck_diagnostics_with(&program, Some(&*borrowed))
 }
 
 fn check_expr_with_session(session: &Session, expr: &crate::parser::Expr) -> Vec<Diagnostic> {
     let resolver = session.ctx.resolver();
-    let borrowed = resolver.borrow();
+    let borrowed = resolver.lock().unwrap_or_else(|p| p.into_inner());
     typecheck_expr_diagnostics_with(&session.items, expr, Some(&*borrowed))
 }
 
@@ -205,8 +204,8 @@ fn looks_like_item(source: &str) -> bool {
         })
         .unwrap_or(t);
     [
-        "import ", "from ", "fn ", "var ", "const ", "struct ", "class ", "trait ", "enum ",
-        "impl ", "mod ", "signal ",
+        "import ", "from ", "fn ", "async ", "var ", "const ", "struct ", "class ", "trait ",
+        "enum ", "impl ", "mod ", "signal ",
     ]
     .iter()
     .any(|p| t.starts_with(p))
@@ -216,9 +215,8 @@ fn looks_like_item(source: &str) -> bool {
 mod tests {
     use super::*;
     use crate::interpreter::{EvalContext, HashMapResolver, Value};
-    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn incomplete_fn_body() {
@@ -289,8 +287,7 @@ mod tests {
             "util".into(),
             "mod util {\n    pub fn add(a: Int, b: Int): Int { return a + b; }\n}\n".into(),
         );
-        let resolver: Rc<RefCell<dyn ModuleResolver>> =
-            Rc::new(RefCell::new(HashMapResolver::new(modules)));
+        let resolver: ResolverRef = Arc::new(Mutex::new(HashMapResolver::new(modules)));
         let mut session = Session::with_context(EvalContext::with_resolver(resolver));
         match eval_line(&mut session, "import util;") {
             LineResult::Silent => {}

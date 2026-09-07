@@ -301,7 +301,12 @@ fn doc_comment_symbol(
 fn skip_leading_trivia(tokens: &[Token], mut i: usize) -> usize {
     loop {
         match tokens.get(i).map(|t| &t.kind) {
-            Some(TokenKind::DocComment(_) | TokenKind::Comment(_) | TokenKind::Pub) => i += 1,
+            Some(
+                TokenKind::DocComment(_)
+                | TokenKind::Comment(_)
+                | TokenKind::Pub
+                | TokenKind::Async,
+            ) => i += 1,
             Some(TokenKind::At) => {
                 i += 1;
                 if matches!(tokens.get(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
@@ -403,16 +408,8 @@ fn export_in_module(
             let hit = match item {
                 Item::FnDecl(f) if f.name == name => decl_span(&source, TokenKind::Fn, name)
                     .map(|span| ("fn", fn_signature(f), span, f.doc.clone())),
-                Item::VarDecl(v) if v.name == name => {
-                    decl_span(&source, TokenKind::Var, name).map(|span| {
-                        (
-                            "var",
-                            var_signature(&v.name, &v.ty),
-                            span,
-                            v.doc.clone(),
-                        )
-                    })
-                }
+                Item::VarDecl(v) if v.name == name => decl_span(&source, TokenKind::Var, name)
+                    .map(|span| ("var", var_signature(&v.name, &v.ty), span, v.doc.clone())),
                 Item::ConstDecl(c) if c.name == name => decl_span(&source, TokenKind::Const, name)
                     .map(|span| ("const", format!("const {}", c.name), span, c.doc.clone())),
                 Item::StructDecl(s) if s.name == name => {
@@ -749,8 +746,7 @@ fn collect_item_hits(
             Item::ImplDecl { methods, span, .. } => {
                 for m in methods {
                     if m.name == name {
-                        if let Some(name_span) =
-                            decl_span_from(source, TokenKind::Fn, name, *span)
+                        if let Some(name_span) = decl_span_from(source, TokenKind::Fn, name, *span)
                         {
                             push_hit(
                                 hits,
@@ -1014,8 +1010,7 @@ fn class_or_struct_member(
                 }
             }
             Item::Mod(m) => {
-                if let Some(info) =
-                    class_or_struct_member(source, file, &m.items, type_name, name)
+                if let Some(info) = class_or_struct_member(source, file, &m.items, type_name, name)
                 {
                     return Some(info);
                 }
@@ -1038,11 +1033,7 @@ fn unique_named_member(
             found.push(info);
         }
     }
-    if found.len() == 1 {
-        found.pop()
-    } else {
-        None
-    }
+    if found.len() == 1 { found.pop() } else { None }
 }
 
 fn member_in_modules(
@@ -1275,9 +1266,10 @@ fn fn_signature(f: &FnDecl) -> String {
         .map(|p| format!("{}: {}", p.name, type_string(&p.ty)))
         .collect::<Vec<_>>()
         .join(", ");
+    let prefix = if f.is_async { "async " } else { "" };
     match &f.return_type {
-        Some(ty) => format!("fn {}({}): {}", f.name, params, type_string(ty)),
-        None => format!("fn {}({})", f.name, params),
+        Some(ty) => format!("{prefix}fn {}({}): {}", f.name, params, type_string(ty)),
+        None => format!("{prefix}fn {}({})", f.name, params),
     }
 }
 

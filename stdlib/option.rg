@@ -22,7 +22,7 @@ pub mod option {
             }
         }
 
-        fn unwrap_or(self, fallback: Int) {
+        fn unwrap_or(self, fallback: T) {
             match self {
                 Some(v) { return v; }
                 None { return fallback; }

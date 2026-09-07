@@ -2,6 +2,7 @@
 
 use super::*;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 fn example(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -49,7 +50,14 @@ fn check_io_time_rg_is_clean() {
 
 #[test]
 fn check_tour_and_json_rg_are_clean() {
-    for name in ["tour.rg", "json.rg", "tests.rg", "signals.rg", "process.rg"] {
+    for name in [
+        "tour.rg",
+        "json.rg",
+        "tests.rg",
+        "signals.rg",
+        "process.rg",
+        "concurrency.rg",
+    ] {
         let diags = check_file(&example(name));
         assert!(diags.is_empty(), "{name}: {diags:?}");
     }
@@ -410,8 +418,8 @@ fn runtime_error_includes_span() {
     let result = run_source(
         r#"
 fn main(): Int {
-    var x: Int = 5;
-    print(x + "hello");
+    var a = [1, 2];
+    print(a[9]);
     return 0;
 }
 "#,
@@ -423,7 +431,7 @@ fn main(): Int {
         result.stderr
     );
     assert!(
-        result.stderr.contains("cannot add"),
+        result.stderr.contains("out of bounds"),
         "stderr: {}",
         result.stderr
     );
@@ -1850,6 +1858,162 @@ fn main(): Int {
 }
 
 #[test]
+fn unwrap_or_accepts_string() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    print(Option.Some("hi").unwrap_or("x"));
+    print(Option.None.unwrap_or("y"));
+    print(Result.Ok("a").unwrap_or("b"));
+    print(Result.Err("e").unwrap_or("c"));
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+    let out = assert_ok(
+        r#"
+fn main(): Int {
+    print(Option.Some("hi").unwrap_or("x"));
+    print(Option.None.unwrap_or("y"));
+    print(Result.Ok("a").unwrap_or("b"));
+    print(Result.Err("e").unwrap_or("c"));
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out, "hi\ny\na\nc\n");
+}
+
+#[test]
+fn typecheck_for_in_array_literal_elem_type() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    for x in [1, 2] {
+        print(x + "a");
+    }
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot add Int and String")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_for_in_mixed_or_unknown_array_is_quiet() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    for x in [1, "a"] {
+        print(x + "a");
+    }
+    var xs = [1, 2];
+    for y in xs {
+        print(y + "a");
+    }
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn result_try_ok_unwraps() {
+    let out = assert_ok(
+        r#"
+fn load(): Result {
+    return Result.Ok(7);
+}
+
+fn wrapped(): Result {
+    var n = load()?;
+    return Result.Ok(n);
+}
+
+fn main(): Int {
+    match wrapped() {
+        Ok(v) { print(v); }
+        Err(_) { print("err"); }
+    }
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "7");
+}
+
+#[test]
+fn result_try_err_returns_early() {
+    let out = assert_ok(
+        r#"
+fn fail(): Result {
+    return Result.Err("nope");
+}
+
+fn wrapped(): Result {
+    var n = fail()?;
+    print("should not print");
+    return Result.Ok(n);
+}
+
+fn main(): Int {
+    match wrapped() {
+        Ok(v) { print(v); }
+        Err(e) { print(e); }
+    }
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "nope");
+}
+
+#[test]
+fn typecheck_try_requires_result_fn() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    var n = Result.Ok(1)?;
+    return n;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("return Result")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_try_expects_result() {
+    let diags = check_source(
+        r#"
+fn go(): Result {
+    var n = 1?;
+    return Result.Ok(n);
+}
+fn main(): Int { return 0; }
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("? expects Result")),
+        "{diags:?}"
+    );
+}
+
+#[test]
 fn stdlib_vec2_and_str_split() {
     let out = assert_ok(
         r#"
@@ -1940,6 +2104,116 @@ fn bitwise_float_is_type_error() {
     let diags = check_source("fn main(): Int { return ~1.0; }\n", "t.rg");
     assert!(
         diags.iter().any(|d| d.message.contains("bitwise")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_rejects_add_int_string() {
+    let diags = check_source(
+        "fn main(): Int { print(1 + \"hello\"); return 0; }\n",
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot add Int and String")),
+        "{diags:?}"
+    );
+    let result = run_source("fn main(): Int { var x: Int = 5; print(x + \"hello\"); return 0; }\n");
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("type error") && result.stderr.contains("cannot add"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn typecheck_allows_string_add_and_int_float() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    print("a" + "b");
+    print(1 + 2.5);
+    print(3 > 1);
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn typecheck_rejects_compare_and_index_mismatch() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    print(1 < "x");
+    print(true[0]);
+    var m = {"a": 1};
+    print(m[0]);
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("cannot compare")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot index Bool")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot index Map with Int")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_rejects_chained_add_mismatch() {
+    let diags = check_source(
+        "fn main(): Int { print((1 + 2) + \"x\"); return 0; }\n",
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot add Int and String")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_rejects_assign_and_negate() {
+    let diags = check_source(
+        r#"
+fn main(): Int {
+    var n: Int = 1;
+    n = "no";
+    print(-true);
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot assign String to Int")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot negate Bool")),
         "{diags:?}"
     );
 }
@@ -2236,7 +2510,7 @@ fn main(): Int {
     assert!(
         diags
             .iter()
-            .any(|d| d.message.contains("expects a function name")),
+            .any(|d| d.message.contains("expects a function")),
         "{diags:?}"
     );
 }
@@ -2364,7 +2638,7 @@ fn main(): Int {
 
     let tokens = Lexer::new(src).tokenize().unwrap();
     let program = Parser::new(tokens).parse().unwrap();
-    let resolver = Rc::new(RefCell::new(HashMapResolver::new(modules)));
+    let resolver = Arc::new(Mutex::new(HashMapResolver::new(modules)));
     let mut ctx = EvalContext::with_resolver(resolver);
     ctx.load_program(&program).unwrap();
     ctx.call("main", vec![]).unwrap();
@@ -2414,6 +2688,8 @@ import io;
 fn main(): Int {
     io.append_text("a.txt");
     io.list_dir();
+    io.read_stdin("x");
+    io.read_line(1);
     io.chmod("a.txt");
     return 0;
 }
@@ -2430,6 +2706,18 @@ fn main(): Int {
         diags
             .iter()
             .any(|d| d.message.contains("list_dir") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("read_stdin") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("read_line") && d.message.contains("expected 0 args")),
         "{diags:?}"
     );
     assert!(
@@ -2989,6 +3277,7 @@ fn run_examples_ok() {
         "tour.rg",
         "json.rg",
         "signals.rg",
+        "concurrency.rg",
     ] {
         let result = run_file(&example(name));
         assert!(result.ok, "{name}: {}", result.stderr);
@@ -3072,6 +3361,40 @@ fn main(): Int {
 }
 
 #[test]
+fn process_run_ok_and_missing() {
+    let echo = if cfg!(windows) {
+        r#"
+import process;
+fn main(): Int {
+    print(process.run("cmd", ["/C", "echo hello"]).unwrap());
+    return 0;
+}
+"#
+    } else {
+        r#"
+import process;
+fn main(): Int {
+    print(process.run("echo", ["hello"]).unwrap());
+    return 0;
+}
+"#
+    };
+    let out = assert_ok(echo);
+    assert!(out.to_lowercase().contains("hello"), "{out}");
+
+    let missing = assert_ok(
+        r#"
+import process;
+fn main(): Int {
+    print(process.run("rg_no_such_command_9f3a", []).is_err());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(missing.trim(), "true");
+}
+
+#[test]
 fn process_requires_import() {
     let diags = check_source("fn main(): Int { process.exit(0); return 0; }\n", "t.rg");
     assert!(
@@ -3091,6 +3414,7 @@ fn main(): Int {
     process.argv(1);
     process.env();
     process.exit();
+    process.run("echo");
     return 0;
 }
 "#,
@@ -3112,6 +3436,12 @@ fn main(): Int {
         diags
             .iter()
             .any(|d| d.message.contains("process.exit") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("process.run") && d.message.contains("expected 2 args")),
         "{diags:?}"
     );
 }
@@ -3224,7 +3554,8 @@ fn runtime_error_includes_call_trace() {
     let result = run_source(
         r#"
 fn inner(): Int {
-    return 1 + "x";
+    var a = [1, 2];
+    return a[9];
 }
 fn outer(): Int {
     return inner();
@@ -3253,7 +3584,8 @@ fn runtime_error_traces_method() {
         r#"
 class Boom {
     fn bang(): Int {
-        return 1 + "x";
+        var a = [1, 2];
+        return a[9];
     }
 }
 fn main(): Int {
@@ -3278,7 +3610,8 @@ fn runtime_error_trace_includes_module_file() {
         r#"
 mod util {
     pub fn boom(): Int {
-        return 1 + "x";
+        var a = [1, 2];
+        return a[9];
     }
 }
 "#
@@ -3313,7 +3646,7 @@ fn runtime_error_trace_from_imported_file() {
     let _ = fs::create_dir_all(&dir);
     fs::write(
         dir.join("util.rg"),
-        "mod util {\n    pub fn boom(): Int {\n        return 1 + \"x\";\n    }\n}\n",
+        "mod util {\n    pub fn boom(): Int {\n        var a = [1, 2];\n        return a[9];\n    }\n}\n",
     )
     .unwrap();
     fs::write(
@@ -3341,6 +3674,114 @@ fn runtime_error_trace_from_imported_file() {
 }
 
 #[test]
+fn typecheck_imported_module_body_int_plus_string() {
+    let mut modules = HashMap::new();
+    modules.insert(
+        "util.rg".into(),
+        r#"
+mod util {
+    pub fn boom(): Int {
+        return 1 + "x";
+    }
+}
+"#
+        .into(),
+    );
+    let diags = check_source_with_modules(
+        "import util;\nfn main(): Int {\n    return util.boom();\n}\n",
+        "main.rg",
+        modules.clone(),
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot add Int and String")),
+        "{diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.file.contains("util.rg")),
+        "expected diagnostic to name util.rg, got {diags:?}"
+    );
+
+    let result = run_source_with_modules(
+        "import util;\nfn main(): Int {\n    return util.boom();\n}\n",
+        modules,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("type error") && result.stderr.contains("cannot add"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("util.rg"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn typecheck_imported_file_body_int_plus_string() {
+    use std::fs;
+    let dir = std::env::temp_dir().join("rosegold_check_import_body");
+    let _ = fs::create_dir_all(&dir);
+    fs::write(
+        dir.join("util.rg"),
+        "mod util {\n    pub fn boom(): Int {\n        return 1 + \"x\";\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.rg"),
+        "import util;\nfn main(): Int {\n    return util.boom();\n}\n",
+    )
+    .unwrap();
+    let diags = check_file(&dir.join("main.rg"));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot add Int and String")),
+        "{diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.file.contains("util.rg")),
+        "expected diagnostic to name util.rg, got {diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_imported_class_method_body() {
+    let mut modules = HashMap::new();
+    modules.insert(
+        "util.rg".into(),
+        r#"
+mod util {
+    pub class Boom {
+        fn bang(self): Int {
+            return 1 + "x";
+        }
+    }
+}
+"#
+        .into(),
+    );
+    let diags = check_source_with_modules(
+        "from util import Boom;\nfn main(): Int {\n    var b = Boom {};\n    return b.bang();\n}\n",
+        "main.rg",
+        modules,
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("cannot add Int and String")),
+        "{diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.file.contains("util.rg")),
+        "expected diagnostic to name util.rg, got {diags:?}"
+    );
+}
+
+#[test]
 fn missing_module_names_lookup_paths() {
     let diags = check_source_with_modules(
         "import no_such_mod;\nfn main(): Int { return 0; }\n",
@@ -3364,4 +3805,661 @@ fn examples_tests_rg_passes() {
         "{}",
         result.stdout
     );
+}
+
+#[test]
+fn spawn_shares_array_with_mutex() {
+    let out = assert_ok(
+        r#"
+fn bump(xs: Array, lock: Mutex) {
+    lock.lock();
+    xs.push(1);
+    lock.unlock();
+}
+
+fn main(): Int {
+    var xs = [];
+    var lock = Mutex();
+    var t = spawn bump(xs, lock);
+    bump(xs, lock);
+    await t;
+    print(xs.len());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "2");
+}
+
+#[test]
+fn channel_ping() {
+    let out = assert_ok(
+        r#"
+fn ping(ch: Channel) {
+    ch.send(7);
+}
+
+fn main(): Int {
+    var ch = Channel();
+    var t = spawn ping(ch);
+    print(ch.recv());
+    await t;
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "7");
+}
+
+#[test]
+fn channel_close_recv_none_and_send_err() {
+    let out = assert_ok(
+        r#"
+fn main(): Int {
+    var ch = Channel();
+    ch.send(1);
+    ch.close();
+    print(ch.recv());
+    print(ch.recv());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out, "1\nnone\n");
+
+    let result = run_source(
+        r#"
+fn main(): Int {
+    var ch = Channel();
+    ch.close();
+    ch.send(1);
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("closed"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn channel_recv_timeout_and_task_wait() {
+    let out = assert_ok(
+        r#"
+fn hang(ch: Channel) {
+    ch.recv();
+}
+
+fn main(): Int {
+    var ch = Channel();
+    print(ch.recv_timeout(0.0).is_none());
+    ch.send(9);
+    print(ch.recv_timeout(0.0).unwrap());
+
+    var t = spawn hang(ch);
+    print(t.wait(0.05).is_none());
+    ch.close();
+    await t;
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out, "true\n9\ntrue\n");
+}
+
+#[test]
+fn typecheck_channel_close_recv_timeout_and_task_wait_arity() {
+    let diags = check_source(
+        r#"
+fn hang(ch: Channel) {
+    ch.recv();
+}
+
+fn main(): Int {
+    var ch = Channel();
+    ch.close(1);
+    ch.recv_timeout();
+    var t = spawn hang(ch);
+    t.wait();
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("Channel.close")
+            && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("Channel.recv_timeout")
+                && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("Task.wait") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn await_propagates_task_error() {
+    let result = run_source(
+        r#"
+fn boom(): Int {
+    assert(false);
+    return 0;
+}
+
+fn main(): Int {
+    await spawn boom();
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("assertion failed") || result.message.contains("assertion failed"),
+        "{}",
+        result.message
+    );
+}
+
+#[test]
+fn double_await_is_runtime_error() {
+    let result = run_source(
+        r#"
+fn work(): Int {
+    return 1;
+}
+
+fn main(): Int {
+    var t = spawn work();
+    await t;
+    await t;
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.message.contains("already awaited"),
+        "{}",
+        result.message
+    );
+}
+
+#[test]
+fn mutex_same_thread_double_lock_is_error() {
+    let result = run_source(
+        r#"
+fn main(): Int {
+    var m = Mutex();
+    m.lock();
+    m.lock();
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.message.contains("already locked"),
+        "{}",
+        result.message
+    );
+}
+
+#[test]
+fn spawn_non_call_fails_to_parse() {
+    let diags = check_source("fn main(): Int { spawn x; return 0; }\n", "t.rg");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("spawn expects a call")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn format_spawn_await() {
+    let src = "fn main(): Int {\n    var t = spawn foo();\n    await t;\n    return 0;\n}\n";
+    let out = format_source(src).unwrap();
+    assert!(out.contains("spawn foo()"), "{out}");
+    assert!(out.contains("await t"), "{out}");
+}
+
+#[test]
+fn async_fn_await_call() {
+    let out = assert_ok(
+        r#"
+async fn add(a: Int, b: Int): Int {
+    return a + b;
+}
+
+fn main(): Int {
+    print(await add(2, 3));
+    var t = add(1, 1);
+    print(await t);
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "5\n2");
+}
+
+#[test]
+fn spawn_async_fn_is_one_task() {
+    let out = assert_ok(
+        r#"
+async fn work(): Int {
+    return 4;
+}
+
+fn main(): Int {
+    print(await spawn work());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "4");
+}
+
+#[test]
+fn async_fn_main_runs_inline() {
+    let out = assert_ok(
+        r#"
+async fn main(): Int {
+    print(1);
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "1");
+}
+
+#[test]
+fn async_method_await() {
+    let out = assert_ok(
+        r#"
+class Box {
+    var n: Int = 0;
+    async fn get(): Int {
+        return self.n;
+    }
+}
+
+fn main(): Int {
+    var b = Box { n: 9 };
+    print(await b.get());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "9");
+}
+
+#[test]
+fn async_call_is_task_not_inner_type() {
+    let diags = check_source(
+        r#"
+async fn add(a: Int, b: Int): Int {
+    return a + b;
+}
+fn main(): Int {
+    var x: Int = add(1, 2);
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("Task")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn format_async_fn() {
+    let src = "async fn add(a: Int, b: Int): Int {\n    return a + b;\n}\n";
+    let out = format_source(src).unwrap();
+    assert!(out.contains("async fn add"), "{out}");
+}
+
+#[test]
+fn lambda_call_and_capture() {
+    let out = assert_ok(
+        r#"
+fn main(): Int {
+    var n: Int = 1;
+    var f = fn(x: Int): Int { return x + n; };
+    print(f(2));
+    n = 10;
+    print(f(2));
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "3\n12");
+}
+
+#[test]
+fn lambda_mutates_outer() {
+    let out = assert_ok(
+        r#"
+fn main(): Int {
+    var n: Int = 0;
+    var bump = fn() { n = n + 1; };
+    bump();
+    bump();
+    print(n);
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "2");
+}
+
+#[test]
+fn spawn_lambda_shares_array() {
+    let out = assert_ok(
+        r#"
+fn main(): Int {
+    var xs = [];
+    var t = spawn fn() { xs.push(1); };
+    await t;
+    print(xs.len());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "1");
+}
+
+#[test]
+fn signal_connect_lambda() {
+    let out = assert_ok(
+        r#"
+signal collected(amount: Int);
+fn main(): Int {
+    collected.connect(fn(amount: Int) { print(amount); });
+    collected.emit(7);
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "7");
+}
+
+#[test]
+fn format_lambda() {
+    let src = "fn main(): Int {\n    var f = fn(x: Int): Int {\n        return x;\n    };\n    return f(1);\n}\n";
+    let out = format_source(src).unwrap();
+    assert!(out.contains("fn(x: Int): Int"), "{out}");
+}
+
+#[test]
+fn trailing_closure_call_and_capture() {
+    let out = assert_ok(
+        r#"
+fn apply(x: Int, f: Fn) {
+    f();
+}
+
+fn once(f: Fn) {
+    f();
+}
+
+fn main(): Int {
+    var n: Int = 7;
+    apply(1) { print(n); };
+    once { print(n + 1); };
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "7\n8");
+}
+
+#[test]
+fn trailing_closure_signal_connect() {
+    let out = assert_ok(
+        r#"
+signal ping();
+fn main(): Int {
+    ping.connect { print(2); };
+    ping.emit();
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "2");
+}
+
+#[test]
+fn format_trailing_closure() {
+    let src = "fn main(): Int {\n    foo(1) { print(1); };\n    column { print(1); };\n    return 0;\n}\n";
+    let out = format_source(src).unwrap();
+    assert!(out.contains("foo(1) {"), "{out}");
+    assert!(out.contains("column {"), "{out}");
+    assert!(!out.contains("fn()"), "{out}");
+    let again = format_source(&out).unwrap();
+    assert_eq!(out, again);
+}
+
+#[test]
+fn path_requires_import() {
+    let diags = check_source(
+        "fn main(): Int { path.join(\"a\", \"b\"); return 0; }\n",
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("path") || d.message.contains("undefined")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_path_arity_and_unknown() {
+    let diags = check_source(
+        r#"
+import path;
+fn main(): Int {
+    path.join("a");
+    path.dirname();
+    path.ext("a", "b");
+    path.absolute("a");
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("path.join") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("path.dirname") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("path.ext") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown function") && d.message.contains("path.absolute")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn path_join_dirname_ext() {
+    let out = assert_ok(
+        r#"
+import path;
+fn main(): Int {
+    print(path.join("a", "b"));
+    print(path.dirname("a/b/c.txt"));
+    print(path.ext("a/b/c.txt"));
+    print(path.ext("noext"));
+    return 0;
+}
+"#,
+    );
+    let joined = std::path::Path::new("a").join("b");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4, "{out}");
+    assert_eq!(lines[0], joined.to_string_lossy());
+    assert_eq!(lines[1], "a/b");
+    assert_eq!(lines[2], "txt");
+    assert_eq!(lines[3], "");
+}
+
+#[test]
+fn regex_requires_import() {
+    let diags = check_source(
+        "fn main(): Int { regex.is_match(\"a\", \"a\"); return 0; }\n",
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("regex") || d.message.contains("undefined")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_regex_arity_and_unknown() {
+    let diags = check_source(
+        r#"
+import regex;
+fn main(): Int {
+    regex.is_match("a");
+    regex.find("a");
+    regex.replace("a", "b");
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("regex.is_match") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("regex.find") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown function") && d.message.contains("regex.replace")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn regex_is_match_and_find() {
+    let out = assert_ok(
+        r#"
+import regex;
+fn main(): Int {
+    print(regex.is_match("\\d+", "abc123").unwrap());
+    print(regex.is_match("\\d+", "abc").unwrap());
+    print(regex.is_match("(", "a").is_err());
+    match regex.find("\\d+", "ab12cd").unwrap() {
+        Some(s) { print(s); }
+        None { print("none"); }
+    }
+    match regex.find("\\d+", "abc").unwrap() {
+        Some(s) { print(s); }
+        None { print("none"); }
+    }
+    print(regex.find("(", "a").is_err());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "true\nfalse\ntrue\n12\nnone\ntrue");
+}
+
+#[test]
+fn http_requires_import() {
+    let diags = check_source("fn main(): Int { http.get(\"x\"); return 0; }\n", "t.rg");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("http") || d.message.contains("undefined")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_http_arity_and_unknown() {
+    let diags = check_source(
+        r#"
+import http;
+fn main(): Int {
+    http.get();
+    http.post("u");
+    http.put("u", "b");
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("http.get") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("http.post") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown function") && d.message.contains("http.put")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn http_bad_url_is_err() {
+    let out = assert_ok(
+        r#"
+import http;
+fn main(): Int {
+    print(http.get("not-a-url").is_err());
+    print(http.post("not-a-url", "x").is_err());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "true\ntrue");
 }

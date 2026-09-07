@@ -263,7 +263,7 @@
     "body": [
       "import process;"
     ],
-    "description": "Import process (argv, env, exit)"
+    "description": "Import process (argv, env, exit, run)"
   },
   "Import json": {
     "prefix": "importjson",
@@ -271,5 +271,73 @@
       "import json;"
     ],
     "description": "Import json (parse, stringify)"
+  },
+  "Import path": {
+    "prefix": "importpath",
+    "body": [
+      "import path;"
+    ],
+    "description": "Import path (join, dirname, ext)"
+  },
+  "Import http": {
+    "prefix": "importhttp",
+    "body": [
+      "import http;"
+    ],
+    "description": "Import http (get, post)"
+  },
+  "Import regex": {
+    "prefix": "importregex",
+    "body": [
+      "import regex;"
+    ],
+    "description": "Import regex (is_match, find)"
+  },
+  "Spawn": {
+    "prefix": "spawn",
+    "body": [
+      "spawn ${1:work}(${2})"
+    ],
+    "description": "Spawn a call on another thread"
+  },
+  "Await": {
+    "prefix": "await",
+    "body": [
+      "await ${1:t}"
+    ],
+    "description": "Wait for a spawned Task"
+  },
+  "Lambda": {
+    "prefix": "fn()",
+    "body": [
+      "fn(${1:args}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Anonymous function (closure)"
+  },
+  "Async function": {
+    "prefix": "async",
+    "body": [
+      "async fn ${1:name}(${2:args}): ${3:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Async function (call returns Task)"
+  },
+  "Mutex": {
+    "prefix": "mutex",
+    "body": [
+      "var ${1:lock} = Mutex();"
+    ],
+    "description": "Mutex for shared updates"
+  },
+  "Channel": {
+    "prefix": "channel",
+    "body": [
+      "var ${1:ch} = Channel();"
+    ],
+    "description": "Channel between tasks"
   }
 }

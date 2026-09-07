@@ -1,8 +1,7 @@
 //! [`EvalContext`]: load a program, eval statements/expressions.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::parser::*;
 use crate::{RuntimeError, Span};
@@ -11,55 +10,97 @@ use super::ops::*;
 use super::resolver::*;
 use super::value::*;
 
-pub struct EvalContext {
-    pub stdout: String,
-    pub env: Environment,
-    pub functions: HashMap<String, FnDecl>,
-    pub methods: HashMap<String, HashMap<String, FnDecl>>,
-    pub stdlib: HashMap<String, HashMap<String, Value>>,
-    pub structs: HashMap<String, StructDefRef>,
-    pub enums: HashMap<String, EnumDefRef>,
-    /// Child type → parent type (`class Child extends Parent`).
+/// Program data shared by every spawned task.
+pub(super) struct SharedState {
+    data: Mutex<SharedData>,
+    module_resolver: ResolverRef,
+    loaded_modules: Arc<Mutex<HashMap<String, ModuleRef>>>,
+    pub(super) started: Clock,
+    #[cfg(not(target_arch = "wasm32"))]
+    live_tasks: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+struct SharedData {
+    functions: HashMap<String, FnDecl>,
+    methods: HashMap<String, HashMap<String, FnDecl>>,
+    stdlib: HashMap<String, HashMap<String, Value>>,
+    structs: HashMap<String, StructDefRef>,
+    enums: HashMap<String, EnumDefRef>,
     parents: HashMap<String, String>,
-    /// Trait name → signal declarations (for `impl` to expose `.emit`).
     trait_signals: HashMap<String, Vec<SignalDecl>>,
-    /// Type name → traits it implements (class header, nested impl, `impl Trait for Type`).
     type_traits: HashMap<String, Vec<String>>,
+    stdout: String,
+    imported_host: HashSet<String>,
+    argv: Vec<String>,
+    signal_listeners: HashMap<String, Vec<Value>>,
+}
+
+impl SharedData {
+    fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+            methods: HashMap::new(),
+            stdlib: HashMap::new(),
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            parents: HashMap::new(),
+            trait_signals: HashMap::new(),
+            type_traits: HashMap::new(),
+            stdout: String::new(),
+            imported_host: HashSet::new(),
+            argv: Vec::new(),
+            signal_listeners: HashMap::new(),
+        }
+    }
+}
+
+impl SharedState {
+    fn new(resolver: ResolverRef) -> Self {
+        Self {
+            data: Mutex::new(SharedData::new()),
+            module_resolver: resolver,
+            loaded_modules: Arc::new(Mutex::new(HashMap::new())),
+            started: Clock::capture(),
+            #[cfg(not(target_arch = "wasm32"))]
+            live_tasks: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+pub struct EvalContext {
+    pub(super) shared: Arc<SharedState>,
+    pub env: Environment,
     /// Parent type of the method currently executing, for `super.method`.
     super_type: Option<String>,
     /// Source file label for traces (`script.rg`).
     current_file: String,
     /// Module import path while loading (`util.helpers`).
     current_module: String,
-    module_resolver: Rc<RefCell<dyn ModuleResolver>>,
-    loaded_modules: Rc<RefCell<HashMap<String, ModuleRef>>>,
-    /// Set when `return` runs inside a `match` expression so the enclosing function exits.
+    /// Set when `return` runs inside a `match` expression, or `?` sees `Err`,
+    /// so the enclosing function exits.
     pending_return: Option<Value>,
-    /// Host modules (`io`, `time`, `process`, `json`) the program imported.
-    imported_host: HashSet<String>,
-    /// Capture for `time.elapsed` — this VM, not frame `dt`.
-    pub(super) started: Clock,
     /// Function tables of modules whose bodies are on the call stack.
     pub(super) module_fns: Vec<HashMap<String, FnDecl>>,
-    /// `process.argv()` — script path first, then user args.
-    argv: Vec<String>,
-    /// Signal name → connected free-function names, in connect order.
-    signal_listeners: HashMap<String, Vec<String>>,
 }
 
+#[derive(Clone)]
 pub struct Environment {
-    scopes: Vec<HashMap<String, Value>>,
+    scopes: Vec<ScopeRef>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![Arc::new(Mutex::new(HashMap::new()))],
         }
     }
 
+    fn captured(captures: Vec<ScopeRef>) -> Self {
+        Self { scopes: captures }
+    }
+
     pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Arc::new(Mutex::new(HashMap::new())));
     }
 
     pub fn pop_scope(&mut self) {
@@ -67,14 +108,14 @@ impl Environment {
     }
 
     pub fn define(&mut self, name: &str, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), value);
+        if let Some(scope) = self.scopes.last() {
+            lock(scope).insert(name.to_string(), value);
         }
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) {
+            if let Some(v) = lock(scope).get(name) {
                 return Some(v.clone());
             }
         }
@@ -87,7 +128,7 @@ impl Environment {
             return None;
         }
         for scope in self.scopes.iter().skip(1).rev() {
-            if let Some(v) = scope.get(name) {
+            if let Some(v) = lock(scope).get(name) {
                 return Some(v.clone());
             }
         }
@@ -98,9 +139,10 @@ impl Environment {
         if self.scopes.len() < 2 {
             return false;
         }
-        for scope in self.scopes.iter_mut().skip(1).rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), value);
+        for scope in self.scopes.iter().skip(1).rev() {
+            let mut map = lock(scope);
+            if map.contains_key(name) {
+                map.insert(name.to_string(), value);
                 return true;
             }
         }
@@ -108,9 +150,10 @@ impl Environment {
     }
 
     pub fn set(&mut self, name: &str, value: Value, span: Span) -> Result<(), RuntimeError> {
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), value);
+        for scope in self.scopes.iter().rev() {
+            let mut map = lock(scope);
+            if map.contains_key(name) {
+                map.insert(name.to_string(), value);
                 return Ok(());
             }
         }
@@ -120,45 +163,310 @@ impl Environment {
 
 impl EvalContext {
     pub fn new() -> Self {
-        Self::with_resolver(Rc::new(RefCell::new(HashMapResolver::new(HashMap::new()))))
+        Self::with_resolver(Arc::new(Mutex::new(HashMapResolver::new(HashMap::new()))))
     }
 
-    pub fn with_resolver(resolver: Rc<RefCell<dyn ModuleResolver>>) -> Self {
+    pub fn with_resolver(resolver: ResolverRef) -> Self {
         let mut ctx = Self::unpreloaded(resolver);
         let _ = ctx.preload_embedded();
         ctx
     }
 
-    fn unpreloaded(resolver: Rc<RefCell<dyn ModuleResolver>>) -> Self {
+    fn unpreloaded(resolver: ResolverRef) -> Self {
         let mut ctx = Self {
-            stdout: String::new(),
+            shared: Arc::new(SharedState::new(resolver)),
             env: Environment::new(),
-            functions: HashMap::new(),
-            methods: HashMap::new(),
-            stdlib: HashMap::new(),
-            structs: HashMap::new(),
-            enums: HashMap::new(),
-            parents: HashMap::new(),
-            trait_signals: HashMap::new(),
-            type_traits: HashMap::new(),
             super_type: None,
             current_file: String::new(),
             current_module: String::new(),
-            module_resolver: resolver,
-            loaded_modules: Rc::new(RefCell::new(HashMap::new())),
             pending_return: None,
-            imported_host: HashSet::new(),
             module_fns: Vec::new(),
-            started: Clock::capture(),
-            argv: Vec::new(),
-            signal_listeners: HashMap::new(),
         };
         ctx.init_stdlib();
         ctx
     }
 
-    pub fn resolver(&self) -> Rc<RefCell<dyn ModuleResolver>> {
-        self.module_resolver.clone()
+    pub fn resolver(&self) -> ResolverRef {
+        self.shared.module_resolver.clone()
+    }
+
+    fn data<R>(&self, f: impl FnOnce(&SharedData) -> R) -> R {
+        f(&lock(&self.shared.data))
+    }
+
+    fn data_mut<R>(&self, f: impl FnOnce(&mut SharedData) -> R) -> R {
+        f(&mut lock(&self.shared.data))
+    }
+
+    pub fn stdout(&self) -> String {
+        self.data(|d| d.stdout.clone())
+    }
+
+    pub fn take_stdout(&self) -> String {
+        self.data_mut(|d| std::mem::take(&mut d.stdout))
+    }
+
+    pub fn append_stdout(&self, s: &str) {
+        self.data_mut(|d| d.stdout.push_str(s));
+    }
+
+    pub(super) fn fork_task(&self) -> EvalContext {
+        EvalContext {
+            shared: Arc::clone(&self.shared),
+            env: Environment::new(),
+            super_type: None,
+            current_file: self.current_file.clone(),
+            current_module: self.current_module.clone(),
+            pending_return: None,
+            module_fns: Vec::new(),
+        }
+    }
+
+    fn join_live_tasks(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        loop {
+            let handles: Vec<_> = std::mem::take(&mut *lock(&self.shared.live_tasks));
+            if handles.is_empty() {
+                break;
+            }
+            for handle in handles {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn spawn_expr(&mut self, inner: &Expr, span: Span) -> Result<Value, RuntimeError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = inner;
+            return Err(runtime_err("spawn is not supported on this target", span));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match &inner.kind {
+                ExprKind::Lambda { .. } => {
+                    let f = self.eval_expr(inner)?;
+                    self.spawn_value(f, Vec::new(), span)
+                }
+                ExprKind::Call { callee, args } => {
+                    let arg_values: Result<Vec<_>, _> =
+                        args.iter().map(|a| self.eval_expr(a)).collect();
+                    let arg_values = arg_values?;
+                    if let Some(v) = self.yield_if_pending() {
+                        return Ok(v);
+                    }
+                    match &callee.kind {
+                        ExprKind::Ident(name) => {
+                            if let Some(decl) = self.lookup_fn(name) {
+                                self.spawn_fn_decl(decl, arg_values, span)
+                            } else if let Some(v) = self.env.get(name) {
+                                self.spawn_value(v, arg_values, span)
+                            } else {
+                                Err(runtime_err(format!("undefined function '{name}'"), span))
+                            }
+                        }
+                        ExprKind::Member { object, name } => {
+                            let obj = self.eval_expr(object)?;
+                            match &obj {
+                                Value::Module(m) => {
+                                    let decl =
+                                        lock(m).functions.get(name).cloned().ok_or_else(|| {
+                                            runtime_err(
+                                                format!("module has no function '{name}'"),
+                                                span,
+                                            )
+                                        })?;
+                                    self.spawn_fn_decl(decl, arg_values, span)
+                                }
+                                Value::Struct { name: ty, .. } => self.spawn_method(
+                                    ty.clone(),
+                                    obj,
+                                    name.clone(),
+                                    arg_values,
+                                    span,
+                                ),
+                                Value::Enum { module: ty, .. } => self.spawn_method(
+                                    ty.clone(),
+                                    obj,
+                                    name.clone(),
+                                    arg_values,
+                                    span,
+                                ),
+                                _ => Err(runtime_err(
+                                    format!("cannot spawn method on {}", obj.type_name()),
+                                    span,
+                                )),
+                            }
+                        }
+                        _ => {
+                            let f = self.eval_expr(callee)?;
+                            self.spawn_value(f, arg_values, span)
+                        }
+                    }
+                }
+                _ => Err(runtime_err("spawn expects a call or fn() { ... }", span)),
+            }
+        }
+    }
+
+    fn spawn_value(
+        &mut self,
+        f: Value,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        match f {
+            Value::Closure(c) => self.spawn_closure(c, args, span),
+            Value::FnRef { name } => {
+                let decl = self
+                    .lookup_fn(&name)
+                    .ok_or_else(|| runtime_err(format!("undefined function '{name}'"), span))?;
+                self.spawn_fn_decl(decl, args, span)
+            }
+            other => Err(runtime_err(
+                format!("spawn expects a function, got {}", other.type_name()),
+                span,
+            )),
+        }
+    }
+
+    fn spawn_closure(
+        &mut self,
+        c: Arc<Closure>,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (c, args);
+            return Err(runtime_err("spawn is not supported on this target", span));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut child = self.fork_task();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::Builder::new()
+                .name("fn()".to_string())
+                .spawn(move || {
+                    let result = child.call_closure(&c, args, span);
+                    let _ = tx.send(result);
+                })
+                .map_err(|e| runtime_err(format!("failed to spawn: {e}"), span))?;
+            lock(&self.shared.live_tasks).push(handle);
+            Ok(Value::Task(TaskHandle {
+                rx: Arc::new(Mutex::new(Some(rx))),
+            }))
+        }
+    }
+
+    fn spawn_fn_decl(
+        &mut self,
+        decl: FnDecl,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (decl, args);
+            return Err(runtime_err("spawn is not supported on this target", span));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut child = self.fork_task();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::Builder::new()
+                .name(decl.name.clone())
+                .spawn(move || {
+                    let result = child.call_fn_decl(&decl, args, span);
+                    let _ = tx.send(result);
+                })
+                .map_err(|e| runtime_err(format!("failed to spawn: {e}"), span))?;
+            lock(&self.shared.live_tasks).push(handle);
+            Ok(Value::Task(TaskHandle {
+                rx: Arc::new(Mutex::new(Some(rx))),
+            }))
+        }
+    }
+
+    fn spawn_method(
+        &mut self,
+        type_name: String,
+        object: Value,
+        name: String,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (type_name, object, name, args);
+            return Err(runtime_err("spawn is not supported on this target", span));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut child = self.fork_task();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::Builder::new()
+                .name(format!("{type_name}.{name}"))
+                .spawn(move || {
+                    let result = match child
+                        .call_type_method_inline(&type_name, &object, &name, args, span)
+                    {
+                        Ok(Some(v)) => Ok(v),
+                        Ok(None) => Err(runtime_err(
+                            format!("{type_name} has no method '{name}'"),
+                            span,
+                        )),
+                        Err(e) => Err(e),
+                    };
+                    let _ = tx.send(result);
+                })
+                .map_err(|e| runtime_err(format!("failed to spawn: {e}"), span))?;
+            lock(&self.shared.live_tasks).push(handle);
+            Ok(Value::Task(TaskHandle {
+                rx: Arc::new(Mutex::new(Some(rx))),
+            }))
+        }
+    }
+
+    fn await_task(&mut self, expr: &Expr, span: Span) -> Result<Value, RuntimeError> {
+        match self.eval_expr(expr)? {
+            Value::Task(handle) => {
+                let rx = lock(&handle.rx)
+                    .take()
+                    .ok_or_else(|| runtime_err("task already awaited", span))?;
+                match rx.recv() {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(runtime_err("task ended without a result", span)),
+                }
+            }
+            other => Err(runtime_err(
+                format!("await expects Task, got {}", other.type_name()),
+                span,
+            )),
+        }
+    }
+
+    pub(super) fn task_wait(
+        &mut self,
+        handle: &TaskHandle,
+        secs: f64,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let rx = lock(&handle.rx)
+            .take()
+            .ok_or_else(|| runtime_err("task already awaited", span))?;
+        match rx.recv_timeout(duration_secs(secs)) {
+            Ok(Ok(v)) => Ok(option_some(v)),
+            Ok(Err(e)) => Err(e),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                *lock(&handle.rx) = Some(rx);
+                Ok(option_none())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(runtime_err("task ended without a result", span))
+            }
+        }
     }
 
     pub fn set_source_file(&mut self, file: impl Into<String>) {
@@ -178,44 +486,76 @@ impl EvalContext {
     }
 
     pub fn set_argv(&mut self, argv: Vec<String>) {
-        self.argv = argv;
+        self.data_mut(|d| d.argv = argv);
     }
 
-    pub fn argv(&self) -> &[String] {
-        &self.argv
+    pub fn argv(&self) -> Vec<String> {
+        self.data(|d| d.argv.clone())
     }
 
     pub(super) fn connect_signal(
         &mut self,
         signal: &str,
-        listener: &str,
+        listener: Value,
         arity: usize,
         span: Span,
     ) -> Result<(), RuntimeError> {
-        let decl = self
-            .lookup_fn(listener)
-            .ok_or_else(|| runtime_err(format!("undefined function '{listener}'"), span))?;
-        if decl.params.first().is_some_and(|p| p.name == "self") {
-            return Err(runtime_err(
-                format!(
-                    "signal '{signal}' connect expects a free function, got method '{listener}'"
-                ),
-                span,
-            ));
+        match &listener {
+            Value::FnRef { name } => {
+                let decl = self
+                    .lookup_fn(name)
+                    .ok_or_else(|| runtime_err(format!("undefined function '{name}'"), span))?;
+                if decl.params.first().is_some_and(|p| p.name == "self") {
+                    return Err(runtime_err(
+                        format!(
+                            "signal '{signal}' connect expects a free function, got method '{name}'"
+                        ),
+                        span,
+                    ));
+                }
+                if decl.params.len() != arity {
+                    return Err(runtime_err(
+                        format!(
+                            "{name} expected {arity} args to connect to '{signal}', got {}",
+                            decl.params.len()
+                        ),
+                        span,
+                    ));
+                }
+            }
+            Value::Closure(c) => {
+                if c.params.len() != arity {
+                    return Err(runtime_err(
+                        format!(
+                            "fn() expected {arity} args to connect to '{signal}', got {}",
+                            c.params.len()
+                        ),
+                        span,
+                    ));
+                }
+            }
+            other => {
+                return Err(runtime_err(
+                    format!(
+                        "signal '{signal}' connect expects a function, got {}",
+                        other.type_name()
+                    ),
+                    span,
+                ));
+            }
         }
-        if decl.params.len() != arity {
-            return Err(runtime_err(
-                format!(
-                    "{listener} expected {arity} args to connect to '{signal}', got {}",
-                    decl.params.len()
-                ),
-                span,
-            ));
-        }
-        let list = self.signal_listeners.entry(signal.to_string()).or_default();
-        if !list.iter().any(|n| n == listener) {
-            list.push(listener.to_string());
-        }
+        self.data_mut(|d| {
+            let list = d.signal_listeners.entry(signal.to_string()).or_default();
+            let dup = match &listener {
+                Value::FnRef { name } => list
+                    .iter()
+                    .any(|v| matches!(v, Value::FnRef { name: n } if n == name)),
+                _ => false,
+            };
+            if !dup {
+                list.push(listener);
+            }
+        });
         Ok(())
     }
 
@@ -225,13 +565,9 @@ impl EvalContext {
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        let listeners = self
-            .signal_listeners
-            .get(signal)
-            .cloned()
-            .unwrap_or_default();
-        for name in listeners {
-            self.call_fn(&name, args.clone(), span)?;
+        let listeners = self.data(|d| d.signal_listeners.get(signal).cloned().unwrap_or_default());
+        for listener in listeners {
+            self.call_value(listener, args.clone(), span)?;
         }
         Ok(Value::Void)
     }
@@ -241,32 +577,41 @@ impl EvalContext {
         self.load_module("option", span)?;
         self.load_module("result", span)?;
         self.load_module("vec", span)?;
-        if let Some(opt) = self.enums.get("Option").cloned() {
-            self.enums.insert("option".to_string(), opt);
-        }
-        if let Some(res) = self.enums.get("Result").cloned() {
-            self.enums.insert("result".to_string(), res);
-        }
+        self.data_mut(|d| {
+            if let Some(opt) = d.enums.get("Option").cloned() {
+                d.enums.insert("option".to_string(), opt);
+            }
+            if let Some(res) = d.enums.get("Result").cloned() {
+                d.enums.insert("result".to_string(), res);
+            }
+        });
         Ok(())
     }
 
     fn init_stdlib(&mut self) {
-        self.stdlib.insert("__str".to_string(), HashMap::new());
-        self.stdlib.insert("__math".to_string(), HashMap::new());
-        self.stdlib.insert("io".to_string(), HashMap::new());
-        self.stdlib.insert("time".to_string(), HashMap::new());
-        self.stdlib.insert("process".to_string(), HashMap::new());
-        self.stdlib.insert("json".to_string(), HashMap::new());
-        self.stdlib.insert("Array".to_string(), HashMap::new());
+        self.data_mut(|d| {
+            d.stdlib.insert("__str".to_string(), HashMap::new());
+            d.stdlib.insert("__math".to_string(), HashMap::new());
+            d.stdlib.insert("io".to_string(), HashMap::new());
+            d.stdlib.insert("time".to_string(), HashMap::new());
+            d.stdlib.insert("process".to_string(), HashMap::new());
+            d.stdlib.insert("json".to_string(), HashMap::new());
+            d.stdlib.insert("path".to_string(), HashMap::new());
+            d.stdlib.insert("http".to_string(), HashMap::new());
+            d.stdlib.insert("regex".to_string(), HashMap::new());
+            d.stdlib.insert("Array".to_string(), HashMap::new());
+        });
     }
 
     pub fn run(&mut self, program: &[Item]) -> Result<Value, RuntimeError> {
         self.load_program(program)?;
-        if self.functions.contains_key("main") {
+        let result = if self.data(|d| d.functions.contains_key("main")) {
             self.call_fn("main", vec![], Span::default())
         } else {
             Ok(Value::Void)
-        }
+        };
+        self.join_live_tasks();
+        result
     }
 
     /// Register declarations and evaluate top-level consts/vars without calling `main`.
@@ -275,19 +620,23 @@ impl EvalContext {
         for item in program {
             match item {
                 Item::FnDecl(f) => {
-                    self.functions
-                        .insert(f.name.clone(), self.origin_fn(f));
+                    let stamped = self.origin_fn(f);
+                    self.data_mut(|d| {
+                        d.functions.insert(f.name.clone(), stamped);
+                    });
                 }
                 Item::StructDecl(s) => {
                     let fields = s.fields.iter().map(|f| f.name.clone()).collect();
-                    self.structs.insert(
-                        s.name.clone(),
-                        Rc::new(StructDef {
-                            name: s.name.clone(),
-                            fields,
-                            defaults: Vec::new(),
-                        }),
-                    );
+                    self.data_mut(|d| {
+                        d.structs.insert(
+                            s.name.clone(),
+                            Arc::new(StructDef {
+                                name: s.name.clone(),
+                                fields,
+                                defaults: Vec::new(),
+                            }),
+                        );
+                    });
                 }
                 Item::ClassDecl(c) => {
                     self.register_class(c);
@@ -306,13 +655,15 @@ impl EvalContext {
                             },
                         );
                     }
-                    self.enums.insert(
-                        e.name.clone(),
-                        Rc::new(EnumDef {
-                            name: e.name.clone(),
-                            variants,
-                        }),
-                    );
+                    self.data_mut(|d| {
+                        d.enums.insert(
+                            e.name.clone(),
+                            Arc::new(EnumDef {
+                                name: e.name.clone(),
+                                variants,
+                            }),
+                        );
+                    });
                 }
                 Item::ImplDecl {
                     type_name,
@@ -320,15 +671,16 @@ impl EvalContext {
                     methods,
                     ..
                 } => {
-                    let stamped: Vec<FnDecl> =
-                        methods.iter().map(|m| self.origin_fn(m)).collect();
-                    let entry = self
-                        .methods
-                        .entry(type_name.clone())
-                        .or_insert_with(HashMap::new);
-                    for m in stamped {
-                        entry.insert(m.name.clone(), m);
-                    }
+                    let stamped: Vec<FnDecl> = methods.iter().map(|m| self.origin_fn(m)).collect();
+                    self.data_mut(|d| {
+                        let entry = d
+                            .methods
+                            .entry(type_name.clone())
+                            .or_insert_with(HashMap::new);
+                        for m in stamped {
+                            entry.insert(m.name.clone(), m);
+                        }
+                    });
                     if let Some(t) = trait_name {
                         self.record_type_trait(type_name, t);
                     }
@@ -374,43 +726,46 @@ impl EvalContext {
 
     fn register_class(&mut self, c: &ClassDecl) {
         let fields = c.fields.iter().map(|f| f.name.clone()).collect();
-        self.structs.insert(
-            c.name.clone(),
-            Rc::new(StructDef {
-                name: c.name.clone(),
-                fields,
-                defaults: c.defaults.clone(),
-            }),
-        );
-        if let Some(p) = &c.parent {
-            self.parents.insert(c.name.clone(), p.clone());
-        }
         let stamped: Vec<FnDecl> = c.all_methods().map(|m| self.origin_fn(m)).collect();
-        let entry = self
-            .methods
-            .entry(c.name.clone())
-            .or_insert_with(HashMap::new);
-        for m in stamped {
-            entry.insert(m.name.clone(), m);
-        }
+        self.data_mut(|d| {
+            d.structs.insert(
+                c.name.clone(),
+                Arc::new(StructDef {
+                    name: c.name.clone(),
+                    fields,
+                    defaults: c.defaults.clone(),
+                }),
+            );
+            if let Some(p) = &c.parent {
+                d.parents.insert(c.name.clone(), p.clone());
+            }
+            let entry = d.methods.entry(c.name.clone()).or_insert_with(HashMap::new);
+            for m in stamped {
+                entry.insert(m.name.clone(), m);
+            }
+        });
         for t in c.implemented_traits() {
             self.record_type_trait(&c.name, &t);
         }
     }
 
     fn register_trait_decl(&mut self, t: &TraitDecl) {
-        self.trait_signals.insert(t.name.clone(), t.signals.clone());
+        self.data_mut(|d| {
+            d.trait_signals.insert(t.name.clone(), t.signals.clone());
+        });
     }
 
     fn record_type_trait(&mut self, type_name: &str, trait_name: &str) {
-        let entry = self.type_traits.entry(type_name.to_string()).or_default();
-        if !entry.iter().any(|n| n == trait_name) {
-            entry.push(trait_name.to_string());
-        }
+        self.data_mut(|d| {
+            let entry = d.type_traits.entry(type_name.to_string()).or_default();
+            if !entry.iter().any(|n| n == trait_name) {
+                entry.push(trait_name.to_string());
+            }
+        });
     }
 
     fn define_trait_signals(&mut self, trait_name: &str) {
-        let Some(sigs) = self.trait_signals.get(trait_name).cloned() else {
+        let Some(sigs) = self.data(|d| d.trait_signals.get(trait_name).cloned()) else {
             return;
         };
         for s in sigs {
@@ -428,14 +783,15 @@ impl EvalContext {
     }
 
     fn bind_all_trait_signals(&mut self) {
-        let traits: Vec<String> = self.type_traits.values().flatten().cloned().collect();
+        let traits: Vec<String> =
+            self.data(|d| d.type_traits.values().flatten().cloned().collect());
         for t in traits {
             self.define_trait_signals(&t);
         }
     }
 
     fn apply_inheritance(&mut self, span: Span) -> Result<(), RuntimeError> {
-        let names: Vec<String> = self.parents.keys().cloned().collect();
+        let names: Vec<String> = self.data(|d| d.parents.keys().cloned().collect());
         let mut done = HashSet::new();
         let mut stack = Vec::new();
         for name in names {
@@ -460,12 +816,20 @@ impl EvalContext {
                 span,
             ));
         }
-        let Some(parent) = self.parents.get(name).cloned() else {
+        let parent = self.data(|d| d.parents.get(name).cloned());
+        let Some(parent) = parent else {
             done.insert(name.to_string());
             return Ok(());
         };
-        if !self.structs.contains_key(&parent) {
-            if self.methods.contains_key(&parent) {
+        let (has_struct, has_methods, has_enum) = self.data(|d| {
+            (
+                d.structs.contains_key(&parent),
+                d.methods.contains_key(&parent),
+                d.enums.contains_key(&parent),
+            )
+        });
+        if !has_struct {
+            if has_methods {
                 done.insert(name.to_string());
                 return Ok(());
             }
@@ -474,7 +838,7 @@ impl EvalContext {
                 span,
             ));
         }
-        if self.enums.contains_key(&parent) {
+        if has_enum {
             return Err(runtime_err(
                 format!("class '{name}' cannot extend enum '{parent}'"),
                 span,
@@ -484,14 +848,10 @@ impl EvalContext {
         self.flatten_type(&parent, span, done, stack)?;
         stack.pop();
         let parent_def = self
-            .structs
-            .get(&parent)
-            .cloned()
+            .data(|d| d.structs.get(&parent).cloned())
             .ok_or_else(|| runtime_err(format!("unknown type '{parent}'"), span))?;
         let child_def = self
-            .structs
-            .get(name)
-            .cloned()
+            .data(|d| d.structs.get(name).cloned())
             .ok_or_else(|| runtime_err(format!("unknown type '{name}'"), span))?;
         let mut fields = parent_def.fields.clone();
         for f in &child_def.fields {
@@ -507,14 +867,16 @@ impl EvalContext {
                 defaults.push((n.clone(), e.clone()));
             }
         }
-        self.structs.insert(
-            name.to_string(),
-            Rc::new(StructDef {
-                name: name.to_string(),
-                fields,
-                defaults,
-            }),
-        );
+        self.data_mut(|d| {
+            d.structs.insert(
+                name.to_string(),
+                Arc::new(StructDef {
+                    name: name.to_string(),
+                    fields,
+                    defaults,
+                }),
+            );
+        });
         done.insert(name.to_string());
         Ok(())
     }
@@ -526,10 +888,11 @@ impl EvalContext {
             if !seen.insert(ty.clone()) {
                 break;
             }
-            if let Some(decl) = self.methods.get(&ty).and_then(|m| m.get(name)) {
-                return Some((ty, decl.clone()));
+            if let Some(decl) = self.data(|d| d.methods.get(&ty).and_then(|m| m.get(name)).cloned())
+            {
+                return Some((ty, decl));
             }
-            current = self.parents.get(&ty).cloned();
+            current = self.data(|d| d.parents.get(&ty).cloned());
         }
         None
     }
@@ -542,11 +905,34 @@ impl EvalContext {
         args: Vec<Value>,
         span: Span,
     ) -> Result<Option<Value>, RuntimeError> {
+        let Some((_defined_on, decl)) = self.lookup_method(type_name, name) else {
+            return Ok(None);
+        };
+        if decl.is_async {
+            return Ok(Some(self.spawn_method(
+                type_name.to_string(),
+                object.clone(),
+                name.to_string(),
+                args,
+                span,
+            )?));
+        }
+        self.call_type_method_inline(type_name, object, name, args, span)
+    }
+
+    fn call_type_method_inline(
+        &mut self,
+        type_name: &str,
+        object: &Value,
+        name: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Option<Value>, RuntimeError> {
         let Some((defined_on, decl)) = self.lookup_method(type_name, name) else {
             return Ok(None);
         };
         let prev = self.super_type.take();
-        self.super_type = self.parents.get(&defined_on).cloned();
+        self.super_type = self.data(|d| d.parents.get(&defined_on).cloned());
         let result = self.call_method(&decl, object.clone(), args, span, &defined_on);
         self.super_type = prev;
         result.map(Some)
@@ -612,14 +998,14 @@ impl EvalContext {
         let Value::Struct { fields, .. } = self.env.get("self")? else {
             return None;
         };
-        fields.borrow().get(name).cloned()
+        lock(&fields).get(name).cloned()
     }
 
     fn set_field_on_self(&self, name: &str, value: Value) -> bool {
         let Some(Value::Struct { fields, .. }) = self.env.get("self") else {
             return false;
         };
-        let mut map = fields.borrow_mut();
+        let mut map = lock(&fields);
         if !map.contains_key(name) {
             return false;
         }
@@ -651,7 +1037,9 @@ impl EvalContext {
 
     /// Call a registered function by name.
     pub fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        self.call_fn(name, args, Span::default())
+        let result = self.call_fn(name, args, Span::default());
+        self.join_live_tasks();
+        result
     }
 
     fn eval_import(&mut self, import: &Import, span: Span) -> Result<(), RuntimeError> {
@@ -664,15 +1052,17 @@ impl EvalContext {
         if crate::stdlib::is_host_module(module_name)
             && !crate::stdlib::is_internal_host(module_name)
         {
-            self.imported_host.insert(module_name.clone());
+            self.data_mut(|d| {
+                d.imported_host.insert(module_name.clone());
+            });
             if import.path.len() == 1 {
                 // import io; — allow io.read_text etc.
             } else if import.is_from && import.path.len() == 2 {
                 let item_name = &import.path[1];
                 let alias = import.alias.as_ref().unwrap_or(item_name).clone();
-                if let Some(e) = self.enums.get(item_name).cloned() {
+                if let Some(e) = self.data(|d| d.enums.get(item_name).cloned()) {
                     self.env.define(&alias, Value::EnumType(e));
-                } else if let Some(e) = self.enums.get(module_name).cloned() {
+                } else if let Some(e) = self.data(|d| d.enums.get(module_name).cloned()) {
                     // from option import Option / from result import Result
                     self.env.define(&alias, Value::EnumType(e));
                 } else {
@@ -688,7 +1078,7 @@ impl EvalContext {
                 // import option.something — treat like from-import of last segment when stdlib
                 let item_name = import.path.last().unwrap();
                 let alias = import.alias.as_ref().unwrap_or(item_name).clone();
-                if let Some(e) = self.enums.get(item_name).cloned() {
+                if let Some(e) = self.data(|d| d.enums.get(item_name).cloned()) {
                     self.env.define(&alias, Value::EnumType(e));
                 } else {
                     self.env.define(
@@ -715,10 +1105,12 @@ impl EvalContext {
                 self.env.define(name, Value::Module(module));
             } else if import.path.len() == 2 {
                 let item_name = &import.path[1];
-                let m = module.borrow();
+                let m = lock(&module);
                 let alias = import.alias.as_ref().unwrap_or(item_name).clone();
                 if let Some(decl) = m.functions.get(item_name) {
-                    self.functions.insert(alias.clone(), decl.clone());
+                    self.data_mut(|d| {
+                        d.functions.insert(alias.clone(), decl.clone());
+                    });
                 } else if let Some(value) = m.values.get(item_name) {
                     self.env.define(&alias, value.clone());
                 } else {
@@ -752,11 +1144,11 @@ impl EvalContext {
 
     fn load_module(&mut self, name: &str, span: Span) -> Result<ModuleRef, RuntimeError> {
         {
-            if let Some(m) = self.loaded_modules.borrow().get(name) {
+            if let Some(m) = lock(&self.shared.loaded_modules).get(name) {
                 return Ok(m.clone());
             }
         }
-        let parts = self.module_resolver.borrow().resolve_all(name);
+        let parts = lock(&self.shared.module_resolver).resolve_all(name);
         if parts.is_empty() {
             return Err(runtime_err(
                 format!(
@@ -769,14 +1161,15 @@ impl EvalContext {
         }
 
         let mut module = Module::new();
-        let mut module_ctx = EvalContext::unpreloaded(self.module_resolver.clone());
-        module_ctx.loaded_modules = self.loaded_modules.clone();
+        let mut module_ctx = EvalContext::unpreloaded(self.shared.module_resolver.clone());
+        if let Some(state) = Arc::get_mut(&mut module_ctx.shared) {
+            state.loaded_modules = Arc::clone(&self.shared.loaded_modules);
+        }
 
         for (_key, source) in &parts {
             let file = file_label(_key);
             let prev_file = std::mem::replace(&mut module_ctx.current_file, file);
-            let prev_mod =
-                std::mem::replace(&mut module_ctx.current_module, name.to_string());
+            let prev_mod = std::mem::replace(&mut module_ctx.current_module, name.to_string());
             let tokens = crate::lexer::Lexer::new(source)
                 .tokenize()
                 .map_err(|e| runtime_err(e, span))?;
@@ -792,10 +1185,8 @@ impl EvalContext {
             loaded?;
         }
 
-        let rc = Rc::new(RefCell::new(module));
-        self.loaded_modules
-            .borrow_mut()
-            .insert(name.to_string(), rc.clone());
+        let rc = Arc::new(Mutex::new(module));
+        lock(&self.shared.loaded_modules).insert(name.to_string(), rc.clone());
         Ok(rc)
     }
 
@@ -808,26 +1199,32 @@ impl EvalContext {
                 break;
             }
             if exported {
-                if let Some(def) = src.structs.get(&ty) {
-                    self.structs.insert(ty.clone(), def.clone());
+                if let Some(def) = src.data(|d| d.structs.get(&ty).cloned()) {
+                    self.data_mut(|d| {
+                        d.structs.insert(ty.clone(), def);
+                    });
                 }
                 exported = false;
             }
-            if let Some(parent) = src.parents.get(&ty) {
-                self.parents.insert(ty.clone(), parent.clone());
+            if let Some(parent) = src.data(|d| d.parents.get(&ty).cloned()) {
+                self.data_mut(|d| {
+                    d.parents.insert(ty.clone(), parent);
+                });
             }
-            if let Some(methods) = src.methods.get(&ty) {
-                let entry = self.methods.entry(ty.clone()).or_insert_with(HashMap::new);
-                for (k, v) in methods {
-                    entry.insert(k.clone(), v.clone());
-                }
+            if let Some(methods) = src.data(|d| d.methods.get(&ty).cloned()) {
+                self.data_mut(|d| {
+                    let entry = d.methods.entry(ty.clone()).or_insert_with(HashMap::new);
+                    for (k, v) in methods {
+                        entry.insert(k, v);
+                    }
+                });
             }
-            if let Some(traits) = src.type_traits.get(&ty) {
+            if let Some(traits) = src.data(|d| d.type_traits.get(&ty).cloned()) {
                 for t in traits {
-                    self.record_type_trait(&ty, t);
+                    self.record_type_trait(&ty, &t);
                 }
             }
-            current = src.parents.get(&ty).cloned();
+            current = src.data(|d| d.parents.get(&ty).cloned());
         }
     }
 
@@ -844,41 +1241,45 @@ impl EvalContext {
             let exported = crate::parser::item_is_exported(item, from_mod);
             match item {
                 Item::FnDecl(f) => {
-                    if module_ctx.functions.contains_key(&f.name) {
+                    if module_ctx.data(|d| d.functions.contains_key(&f.name)) {
                         return Err(runtime_err(
                             format!("duplicate export '{}' in module '{}'", f.name, module_name),
                             span,
                         ));
                     }
                     let stamped = module_ctx.origin_fn(f);
-                    module_ctx
-                        .functions
-                        .insert(f.name.clone(), stamped.clone());
+                    module_ctx.data_mut(|d| {
+                        d.functions.insert(f.name.clone(), stamped.clone());
+                    });
                     if exported {
                         module.functions.insert(f.name.clone(), stamped);
                     }
                 }
                 Item::StructDecl(s) => {
-                    if module_ctx.structs.contains_key(&s.name) {
+                    if module_ctx.data(|d| d.structs.contains_key(&s.name)) {
                         return Err(runtime_err(
                             format!("duplicate export '{}' in module '{}'", s.name, module_name),
                             span,
                         ));
                     }
                     let fields = s.fields.iter().map(|f| f.name.clone()).collect();
-                    let def = Rc::new(StructDef {
+                    let def = Arc::new(StructDef {
                         name: s.name.clone(),
                         fields,
                         defaults: Vec::new(),
                     });
-                    module_ctx.structs.insert(s.name.clone(), def.clone());
+                    module_ctx.data_mut(|d| {
+                        d.structs.insert(s.name.clone(), def.clone());
+                    });
                     if exported {
-                        self.structs.insert(s.name.clone(), def.clone());
+                        self.data_mut(|d| {
+                            d.structs.insert(s.name.clone(), def.clone());
+                        });
                         module.values.insert(s.name.clone(), Value::StructType(def));
                     }
                 }
                 Item::ClassDecl(c) => {
-                    if module_ctx.structs.contains_key(&c.name) {
+                    if module_ctx.data(|d| d.structs.contains_key(&c.name)) {
                         return Err(runtime_err(
                             format!("duplicate export '{}' in module '{}'", c.name, module_name),
                             span,
@@ -893,7 +1294,7 @@ impl EvalContext {
                     }
                 }
                 Item::EnumDecl(e) => {
-                    if module_ctx.enums.contains_key(&e.name) {
+                    if module_ctx.data(|d| d.enums.contains_key(&e.name)) {
                         return Err(runtime_err(
                             format!("duplicate export '{}' in module '{}'", e.name, module_name),
                             span,
@@ -909,13 +1310,17 @@ impl EvalContext {
                             },
                         );
                     }
-                    let def = Rc::new(EnumDef {
+                    let def = Arc::new(EnumDef {
                         name: e.name.clone(),
                         variants,
                     });
-                    module_ctx.enums.insert(e.name.clone(), def.clone());
+                    module_ctx.data_mut(|d| {
+                        d.enums.insert(e.name.clone(), def.clone());
+                    });
                     if exported {
-                        self.enums.insert(e.name.clone(), def.clone());
+                        self.data_mut(|d| {
+                            d.enums.insert(e.name.clone(), def.clone());
+                        });
                         module.values.insert(e.name.clone(), Value::EnumType(def));
                     }
                 }
@@ -927,13 +1332,15 @@ impl EvalContext {
                 } => {
                     let stamped: Vec<FnDecl> =
                         methods.iter().map(|m| module_ctx.origin_fn(m)).collect();
-                    let entry = module_ctx
-                        .methods
-                        .entry(type_name.clone())
-                        .or_insert_with(HashMap::new);
-                    for m in stamped {
-                        entry.insert(m.name.clone(), m);
-                    }
+                    module_ctx.data_mut(|d| {
+                        let entry = d
+                            .methods
+                            .entry(type_name.clone())
+                            .or_insert_with(HashMap::new);
+                        for m in stamped {
+                            entry.insert(m.name.clone(), m);
+                        }
+                    });
                     if let Some(t) = trait_name {
                         module_ctx.record_type_trait(type_name, t);
                     }
@@ -954,7 +1361,7 @@ impl EvalContext {
                 continue;
             }
             if let Item::ClassDecl(c) = item {
-                if let Some(def) = module_ctx.structs.get(&c.name).cloned() {
+                if let Some(def) = module_ctx.data(|d| d.structs.get(&c.name).cloned()) {
                     module.values.insert(c.name.clone(), Value::StructType(def));
                 }
                 self.import_type_chain(module_ctx, &c.name);
@@ -1022,16 +1429,17 @@ impl EvalContext {
         span: Span,
     ) -> Result<(), RuntimeError> {
         let parts: Vec<Value> = match inner {
-            Value::Array(a) => a.borrow().clone(),
+            Value::Array(a) => lock(a).clone(),
             other => vec![other.clone()],
         };
         if !field_binds.is_empty() {
-            let field_names = self
-                .enums
-                .get(enum_name)
-                .and_then(|e| e.variants.get(variant))
-                .map(|d| d.field_names.clone())
-                .unwrap_or_default();
+            let field_names = self.data(|d| {
+                d.enums
+                    .get(enum_name)
+                    .and_then(|e| e.variants.get(variant))
+                    .map(|def| def.field_names.clone())
+                    .unwrap_or_default()
+            });
             if field_names.iter().all(|n| n.is_empty()) {
                 return Err(runtime_err(
                     format!("{enum_name}.{variant} has no named payload fields"),
@@ -1085,7 +1493,7 @@ impl EvalContext {
                 return Some(decl.clone());
             }
         }
-        self.functions.get(name).cloned()
+        self.data(|d| d.functions.get(name).cloned())
     }
 
     pub(super) fn call_fn(
@@ -1098,6 +1506,19 @@ impl EvalContext {
             .lookup_fn(name)
             .ok_or_else(|| runtime_err(format!("undefined function '{}'", name), span))?;
         self.call_fn_decl(&decl, args, span)
+    }
+
+    pub(super) fn invoke_user_fn(
+        &mut self,
+        decl: FnDecl,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        if decl.is_async {
+            self.spawn_fn_decl(decl, args, span)
+        } else {
+            self.call_fn_decl(&decl, args, span)
+        }
     }
 
     pub(super) fn call_fn_decl(
@@ -1146,6 +1567,64 @@ impl EvalContext {
         }
     }
 
+    pub(super) fn call_value(
+        &mut self,
+        f: Value,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        match f {
+            Value::Closure(c) => self.call_closure(&c, args, span),
+            Value::FnRef { name } => self.invoke_user_fn(
+                self.lookup_fn(&name)
+                    .ok_or_else(|| runtime_err(format!("undefined function '{name}'"), span))?,
+                args,
+                span,
+            ),
+            other => Err(runtime_err(
+                format!("cannot call {}", other.type_name()),
+                span,
+            )),
+        }
+    }
+
+    pub(super) fn call_closure(
+        &mut self,
+        c: &Closure,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        if args.len() != c.params.len() {
+            return Err(runtime_err(
+                format!("fn() expected {} args, got {}", c.params.len(), args.len()),
+                span,
+            ));
+        }
+        let saved = std::mem::replace(&mut self.env, Environment::captured(c.captures.clone()));
+        self.env.push_scope();
+        for (param, arg) in c.params.iter().zip(args) {
+            self.env.define(&param.name, arg);
+        }
+        let caller_file = self.current_file.clone();
+        let prev_file = std::mem::replace(&mut self.current_file, c.file.clone());
+        let prev_mod = std::mem::replace(&mut self.current_module, c.module.clone());
+        let result = self.exec_block(&c.body);
+        self.current_file = prev_file;
+        self.current_module = prev_mod;
+        self.env = saved;
+        match result {
+            Ok(ControlFlow::Return(v)) => Ok(v),
+            Ok(ControlFlow::Normal) => Ok(Value::Void),
+            Ok(_) => Err(attach_trace(
+                self.stamp(runtime_err("break/continue outside loop", span)),
+                "fn()",
+                span,
+                &caller_file,
+            )),
+            Err(e) => Err(attach_trace(self.stamp(e), "fn()", span, &caller_file)),
+        }
+    }
+
     fn exec_block(&mut self, block: &Block) -> Result<ControlFlow, RuntimeError> {
         for stmt in &block.stmts {
             match self.exec_stmt(stmt)? {
@@ -1165,17 +1644,16 @@ impl EvalContext {
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 let _ = self.eval_expr(e)?;
-                if let Some(v) = self.pending_return.take() {
-                    return Ok(ControlFlow::Return(v));
-                }
-                Ok(ControlFlow::Normal)
+                Ok(self.take_pending_return().unwrap_or(ControlFlow::Normal))
             }
             StmtKind::Return(e) => {
                 let value = match e {
                     Some(expr) => self.eval_expr(expr)?,
                     None => Value::Void,
                 };
-                Ok(ControlFlow::Return(value))
+                Ok(self
+                    .take_pending_return()
+                    .unwrap_or(ControlFlow::Return(value)))
             }
             StmtKind::If {
                 cond,
@@ -1184,11 +1662,23 @@ impl EvalContext {
                 else_block,
             } => {
                 if self.eval_expr(cond)?.truthy() {
+                    if let Some(flow) = self.take_pending_return() {
+                        return Ok(flow);
+                    }
                     return self.exec_block(then_block);
+                }
+                if let Some(flow) = self.take_pending_return() {
+                    return Ok(flow);
                 }
                 for (elif_cond, elif_block) in elif_blocks {
                     if self.eval_expr(elif_cond)?.truthy() {
+                        if let Some(flow) = self.take_pending_return() {
+                            return Ok(flow);
+                        }
                         return self.exec_block(elif_block);
+                    }
+                    if let Some(flow) = self.take_pending_return() {
+                        return Ok(flow);
                     }
                 }
                 if let Some(else_block) = else_block {
@@ -1200,7 +1690,13 @@ impl EvalContext {
             StmtKind::While { cond, body } => {
                 loop {
                     if !self.eval_expr(cond)?.truthy() {
+                        if let Some(flow) = self.take_pending_return() {
+                            return Ok(flow);
+                        }
                         break;
+                    }
+                    if let Some(flow) = self.take_pending_return() {
+                        return Ok(flow);
                     }
                     match self.exec_block(body)? {
                         ControlFlow::Break => break,
@@ -1213,14 +1709,16 @@ impl EvalContext {
             }
             StmtKind::For { name, iter, body } => {
                 let iter_value = self.eval_expr(iter)?;
+                if let Some(flow) = self.take_pending_return() {
+                    return Ok(flow);
+                }
                 let items = match &iter_value {
                     Value::String(s) => s
                         .chars()
                         .map(|c| Value::String(c.to_string()))
                         .collect::<Vec<_>>(),
-                    Value::Array(a) => a.borrow().iter().cloned().collect::<Vec<_>>(),
-                    Value::Map(m) => m
-                        .borrow()
+                    Value::Array(a) => lock(a).iter().cloned().collect::<Vec<_>>(),
+                    Value::Map(m) => lock(m)
                         .keys()
                         .map(|k| Value::String(k.clone()))
                         .collect::<Vec<_>>(),
@@ -1266,11 +1764,17 @@ impl EvalContext {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::None,
                 };
+                if let Some(flow) = self.take_pending_return() {
+                    return Ok(flow);
+                }
                 self.env.define(&v.name, value);
                 Ok(ControlFlow::Normal)
             }
             StmtKind::ConstDecl(c) => {
                 let value = self.eval_expr(&c.value)?;
+                if let Some(flow) = self.take_pending_return() {
+                    return Ok(flow);
+                }
                 self.env.define(&c.name, value);
                 Ok(ControlFlow::Normal)
             }
@@ -1281,8 +1785,23 @@ impl EvalContext {
         }
     }
 
+    fn take_pending_return(&mut self) -> Option<ControlFlow> {
+        self.pending_return.take().map(ControlFlow::Return)
+    }
+
+    fn yield_if_pending(&self) -> Option<Value> {
+        self.pending_return.clone()
+    }
+
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
-        self.eval_expr_inner(expr).map_err(|e| self.stamp(e))
+        if let Some(v) = self.pending_return.clone() {
+            return Ok(v);
+        }
+        let v = self.eval_expr_inner(expr).map_err(|e| self.stamp(e))?;
+        if let Some(pending) = self.pending_return.clone() {
+            return Ok(pending);
+        }
+        Ok(v)
     }
 
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
@@ -1339,11 +1858,11 @@ impl EvalContext {
                 if let Some(v) = self.lookup_ident(name) {
                     return Ok(v);
                 }
-                if let Some(s) = self.structs.get(name) {
-                    return Ok(Value::StructType(s.clone()));
+                if let Some(s) = self.data(|d| d.structs.get(name).cloned()) {
+                    return Ok(Value::StructType(s));
                 }
-                if let Some(e) = self.enums.get(name) {
-                    return Ok(Value::EnumType(e.clone()));
+                if let Some(e) = self.data(|d| d.enums.get(name).cloned()) {
+                    return Ok(Value::EnumType(e));
                 }
                 if self.lookup_fn(name).is_some() {
                     return Ok(Value::FnRef { name: name.clone() });
@@ -1352,6 +1871,9 @@ impl EvalContext {
             }
             ExprKind::Unary { op, expr } => {
                 let value = self.eval_expr(expr)?;
+                if let Some(v) = self.yield_if_pending() {
+                    return Ok(v);
+                }
                 match op {
                     UnaryOp::Neg => match value {
                         Value::Int(n) => Ok(Value::Int(-n)),
@@ -1371,9 +1893,21 @@ impl EvalContext {
                     },
                 }
             }
+            ExprKind::Spawn(inner) => self.spawn_expr(inner, span),
+            ExprKind::Await(inner) => self.await_task(inner, span),
+            ExprKind::Lambda { params, body, .. } => Ok(Value::Closure(Arc::new(Closure {
+                params: params.clone(),
+                body: body.clone(),
+                captures: self.env.scopes.clone(),
+                file: self.current_file.clone(),
+                module: self.current_module.clone(),
+            }))),
             ExprKind::Binary { op, left, right } => {
                 if matches!(op, BinOp::And | BinOp::Or) {
                     let l = self.eval_expr(left)?;
+                    if let Some(v) = self.yield_if_pending() {
+                        return Ok(v);
+                    }
                     return match op {
                         BinOp::And => {
                             if !l.truthy() {
@@ -1393,7 +1927,13 @@ impl EvalContext {
                     };
                 }
                 let l = self.eval_expr(left)?;
+                if let Some(v) = self.yield_if_pending() {
+                    return Ok(v);
+                }
                 let r = self.eval_expr(right)?;
+                if let Some(v) = self.yield_if_pending() {
+                    return Ok(v);
+                }
                 match op {
                     BinOp::Add => match (&l, &r) {
                         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
@@ -1448,6 +1988,9 @@ impl EvalContext {
                 let arg_values: Result<Vec<_>, _> =
                     args.iter().map(|a| self.eval_expr(a)).collect();
                 let arg_values = arg_values?;
+                if let Some(v) = self.yield_if_pending() {
+                    return Ok(v);
+                }
                 match &callee.kind {
                     ExprKind::Ident(name) => self.call_builtin_or_fn(name, arg_values, span),
                     ExprKind::Member { object, name } => {
@@ -1456,10 +1999,10 @@ impl EvalContext {
                         if let ExprKind::Ident(module) = &object.kind {
                             let bound_module =
                                 matches!(self.env.get(module), Some(Value::Module(_)));
-                            if !bound_module && self.stdlib.contains_key(module) {
+                            if !bound_module && self.data(|d| d.stdlib.contains_key(module)) {
                                 if crate::stdlib::is_internal_host(module)
                                     || crate::stdlib::is_language_module(module)
-                                    || self.imported_host.contains(module)
+                                    || self.data(|d| d.imported_host.contains(module))
                                 {
                                     return self.call_qualified(module, name, arg_values, span);
                                 }
@@ -1468,7 +2011,10 @@ impl EvalContext {
                         let obj = self.eval_expr(object)?;
                         self.call_member(&obj, name, arg_values, span)
                     }
-                    _ => Err(runtime_err("invalid callee", span)),
+                    _ => {
+                        let f = self.eval_expr(callee)?;
+                        self.call_value(f, arg_values, span)
+                    }
                 }
             }
             ExprKind::Member { object, name } => {
@@ -1482,18 +2028,18 @@ impl EvalContext {
                         )),
                     },
                     Value::Array(a) => match name.as_str() {
-                        "len" => Ok(Value::Int(a.borrow().len() as i64)),
+                        "len" => Ok(Value::Int(lock(&a).len() as i64)),
                         _ => Err(runtime_err(format!("Array has no member '{}'", name), span)),
                     },
                     Value::Map(m) => match name.as_str() {
-                        "len" => Ok(Value::Int(m.borrow().len() as i64)),
+                        "len" => Ok(Value::Int(lock(&m).len() as i64)),
                         _ => Err(runtime_err(format!("Map has no member '{}'", name), span)),
                     },
                     Value::Struct {
                         name: struct_name,
                         fields,
                     } => {
-                        if let Some(v) = fields.borrow().get(name) {
+                        if let Some(v) = lock(&fields).get(name) {
                             return Ok(v.clone());
                         }
                         Err(runtime_err(
@@ -1524,7 +2070,7 @@ impl EvalContext {
                         ))
                     }
                     Value::Module(m) => {
-                        let m = m.borrow();
+                        let m = lock(&m);
                         if m.functions.contains_key(name) {
                             return Err(runtime_err(
                                 format!("function '{}' must be called with arguments", name),
@@ -1551,7 +2097,7 @@ impl EvalContext {
                 match (&obj, &idx) {
                     (Value::Array(a), Value::Int(n)) => {
                         let i = *n as usize;
-                        a.borrow()
+                        lock(a)
                             .get(i)
                             .cloned()
                             .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
@@ -1563,8 +2109,7 @@ impl EvalContext {
                             .map(|c| Value::String(c.to_string()))
                             .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
                     }
-                    (Value::Map(m), Value::String(k)) => m
-                        .borrow()
+                    (Value::Map(m), Value::String(k)) => lock(m)
                         .get(k)
                         .cloned()
                         .ok_or_else(|| runtime_err(format!("key '{}' not found", k), span)),
@@ -1654,8 +2199,7 @@ impl EvalContext {
             }
             ExprKind::StructLiteral { name, fields } => {
                 let def = self
-                    .structs
-                    .get(name)
+                    .data(|d| d.structs.get(name).cloned())
                     .ok_or_else(|| runtime_err(format!("undefined struct '{}'", name), span))?;
                 let field_names = def.fields.clone();
                 let defaults = def.defaults.clone();
@@ -1681,11 +2225,41 @@ impl EvalContext {
                 }
                 Ok(Value::Struct {
                     name: name.clone(),
-                    fields: Rc::new(RefCell::new(values)),
+                    fields: Arc::new(Mutex::new(values)),
                 })
+            }
+            ExprKind::Try(inner) => {
+                let value = self.eval_expr(inner)?;
+                if let Some(v) = self.yield_if_pending() {
+                    return Ok(v);
+                }
+                let (module, variant, payload) = match &value {
+                    Value::Enum {
+                        module,
+                        variant,
+                        value: payload,
+                    } => (module.as_str(), variant.as_str(), payload.as_deref()),
+                    other => {
+                        return Err(runtime_err(
+                            format!("? expects Result, got {}", other.type_name()),
+                            span,
+                        ));
+                    }
+                };
+                if module != "Result" {
+                    return Err(runtime_err(format!("? expects Result, got {module}"), span));
+                }
+                if variant == "Ok" {
+                    return Ok(payload.cloned().unwrap_or(Value::Void));
+                }
+                self.pending_return = Some(value.clone());
+                Ok(value)
             }
             ExprKind::Assign { op, left, right } => {
                 let value = self.eval_expr(right)?;
+                if let Some(v) = self.yield_if_pending() {
+                    return Ok(v);
+                }
                 match &left.kind {
                     ExprKind::Ident(name) => {
                         let old = || self.lookup_ident(name);
@@ -1723,8 +2297,7 @@ impl EvalContext {
                                 let new_value = if *op == AssignOp::Assign {
                                     value.clone()
                                 } else {
-                                    let old = a
-                                        .borrow()
+                                    let old = lock(&a)
                                         .get(i)
                                         .ok_or_else(|| {
                                             runtime_err("index out of bounds".to_string(), span)
@@ -1732,8 +2305,9 @@ impl EvalContext {
                                         .clone();
                                     apply_assign_op(old, &value, op, span)?
                                 };
-                                if i < a.borrow().len() {
-                                    a.borrow_mut()[i] = new_value;
+                                let mut arr = lock(&a);
+                                if i < arr.len() {
+                                    arr[i] = new_value;
                                 } else {
                                     return Err(runtime_err(
                                         "index out of bounds".to_string(),
@@ -1755,10 +2329,10 @@ impl EvalContext {
                                 let new_value = if *op == AssignOp::Assign {
                                     value.clone()
                                 } else {
-                                    let old = m.borrow().get(&k).cloned().unwrap_or(Value::None);
+                                    let old = lock(&m).get(&k).cloned().unwrap_or(Value::None);
                                     apply_assign_op(old, &value, op, span)?
                                 };
-                                m.borrow_mut().insert(k, new_value);
+                                lock(&m).insert(k, new_value);
                                 Ok(value)
                             }
                             _ => Err(runtime_err(
@@ -1775,10 +2349,10 @@ impl EvalContext {
                                     value.clone()
                                 } else {
                                     let old =
-                                        fields.borrow().get(name).cloned().unwrap_or(Value::None);
+                                        lock(&fields).get(name).cloned().unwrap_or(Value::None);
                                     apply_assign_op(old, &value, op, span)?
                                 };
-                                fields.borrow_mut().insert(name.clone(), new_value);
+                                lock(&fields).insert(name.clone(), new_value);
                                 Ok(value)
                             }
                             _ => Err(runtime_err(

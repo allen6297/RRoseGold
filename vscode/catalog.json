@@ -512,6 +512,26 @@
         ]
     },
     {
+        "key": "io.read_stdin",
+        "label": "read_stdin",
+        "detail": "()",
+        "signature": "io.read_stdin(): Result",
+        "doc": "Read all of stdin as Result.Ok(String). Empty stdin is Ok(\"\").",
+        "kind": "function",
+        "template": "read_stdin()",
+        "params": []
+    },
+    {
+        "key": "io.read_line",
+        "label": "read_line",
+        "detail": "()",
+        "signature": "io.read_line(): Option",
+        "doc": "Read one line from stdin (no trailing newline). EOF returns Option.None.",
+        "kind": "function",
+        "template": "read_line()",
+        "params": []
+    },
+    {
         "key": "time",
         "label": "time",
         "detail": "host",
@@ -544,7 +564,7 @@
         "label": "process",
         "detail": "host",
         "signature": "import process",
-        "doc": "Script arguments, environment variables, and exit. Requires `import process;`. `process.argv()[0]` is the script path.",
+        "doc": "Script arguments, subprocesses, environment variables, and exit. Requires `import process;`. `process.argv()[0]` is the script path.",
         "kind": "module"
     },
     {
@@ -582,6 +602,19 @@
         ]
     },
     {
+        "key": "process.run",
+        "label": "run",
+        "detail": "(cmd, args)",
+        "signature": "process.run(cmd: String, args: Array): Result",
+        "doc": "Run a program. `args` is an Array of String. Result.Ok is stdout (exit 0); Result.Err is a message if the process fails to start or exits non-zero.",
+        "kind": "function",
+        "template": "run(${cmd}, ${args})",
+        "params": [
+            "cmd",
+            "args"
+        ]
+    },
+    {
         "key": "json",
         "label": "json",
         "detail": "host",
@@ -611,6 +644,118 @@
         "template": "stringify(${value})",
         "params": [
             "value"
+        ]
+    },
+    {
+        "key": "path",
+        "label": "path",
+        "detail": "host",
+        "signature": "import path",
+        "doc": "Join and inspect file paths. Requires `import path;`. Uses the host path rules (`io` is files, not paths).",
+        "kind": "module"
+    },
+    {
+        "key": "path.join",
+        "label": "join",
+        "detail": "(a, b)",
+        "signature": "path.join(a: String, b: String): String",
+        "doc": "Join two path segments. If `b` is absolute, the result is `b`.",
+        "kind": "function",
+        "template": "join(${a}, ${b})",
+        "params": [
+            "a",
+            "b"
+        ]
+    },
+    {
+        "key": "path.dirname",
+        "label": "dirname",
+        "detail": "(p)",
+        "signature": "path.dirname(p: String): String",
+        "doc": "Parent directory of `p`. A bare filename is `.`.",
+        "kind": "function",
+        "template": "dirname(${p})",
+        "params": [
+            "p"
+        ]
+    },
+    {
+        "key": "path.ext",
+        "label": "ext",
+        "detail": "(p)",
+        "signature": "path.ext(p: String): String",
+        "doc": "File extension of `p` without the dot. Empty when there is none.",
+        "kind": "function",
+        "template": "ext(${p})",
+        "params": [
+            "p"
+        ]
+    },
+    {
+        "key": "http",
+        "label": "http",
+        "detail": "host",
+        "signature": "import http",
+        "doc": "Tiny blocking HTTP client. Requires `import http;`. Result.Ok is the response body. Not supported on wasm32.",
+        "kind": "module"
+    },
+    {
+        "key": "http.get",
+        "label": "get",
+        "detail": "(url)",
+        "signature": "http.get(url: String): Result",
+        "doc": "GET `url`. Result.Ok is the response body String. Timeouts after 10s. No cookie jar.",
+        "kind": "function",
+        "template": "get(${url})",
+        "params": [
+            "url"
+        ]
+    },
+    {
+        "key": "http.post",
+        "label": "post",
+        "detail": "(url, body)",
+        "signature": "http.post(url: String, body: String): Result",
+        "doc": "POST `body` to `url`. Result.Ok is the response body String. Timeouts after 10s. No cookie jar.",
+        "kind": "function",
+        "template": "post(${url}, ${body})",
+        "params": [
+            "url",
+            "body"
+        ]
+    },
+    {
+        "key": "regex",
+        "label": "regex",
+        "detail": "host",
+        "signature": "import regex",
+        "doc": "Tiny regex search. Requires `import regex;`. Invalid patterns are Result.Err.",
+        "kind": "module"
+    },
+    {
+        "key": "regex.is_match",
+        "label": "is_match",
+        "detail": "(pattern, text)",
+        "signature": "regex.is_match(pattern: String, text: String): Result",
+        "doc": "True when `pattern` matches anywhere in `text`. Result.Ok is Bool. Invalid pattern is Result.Err.",
+        "kind": "function",
+        "template": "is_match(${pattern}, ${text})",
+        "params": [
+            "pattern",
+            "text"
+        ]
+    },
+    {
+        "key": "regex.find",
+        "label": "find",
+        "detail": "(pattern, text)",
+        "signature": "regex.find(pattern: String, text: String): Result",
+        "doc": "First match as Result.Ok(Option): Some(substring) or None. Invalid pattern is Result.Err.",
+        "kind": "function",
+        "template": "find(${pattern}, ${text})",
+        "params": [
+            "pattern",
+            "text"
         ]
     },
     {
@@ -820,6 +965,96 @@
         "template": "Err(${error})",
         "params": [
             "error"
+        ]
+    },
+    {
+        "key": "Mutex",
+        "label": "Mutex",
+        "detail": "builtin",
+        "signature": "Mutex()",
+        "doc": "Mutual exclusion lock for multi-step updates to shared arrays, maps, or objects across `spawn` tasks. `.lock()` / `.unlock()`. Double-lock from the same thread is an error.",
+        "kind": "builtin",
+        "template": "Mutex()"
+    },
+    {
+        "key": "Mutex.lock",
+        "label": "lock",
+        "detail": "()",
+        "signature": "Mutex.lock()",
+        "doc": "Acquire the mutex. Blocks if another thread holds it. Error if this thread already holds it.",
+        "kind": "method",
+        "template": "lock()"
+    },
+    {
+        "key": "Mutex.unlock",
+        "label": "unlock",
+        "detail": "()",
+        "signature": "Mutex.unlock()",
+        "doc": "Release the mutex. Error if this thread does not hold it.",
+        "kind": "method",
+        "template": "unlock()"
+    },
+    {
+        "key": "Channel",
+        "label": "Channel",
+        "detail": "builtin",
+        "signature": "Channel()",
+        "doc": "Unbounded queue between tasks. `.send(v)` / `.recv()` / `.close()`. `.recv()` returns `none` when the channel is closed and empty. `.recv_timeout(seconds)` returns Option (None on timeout or closed-empty).",
+        "kind": "builtin",
+        "template": "Channel()"
+    },
+    {
+        "key": "Channel.send",
+        "label": "send",
+        "detail": "(value)",
+        "signature": "Channel.send(value)",
+        "doc": "Enqueue a value. Heap objects are shared, not copied.",
+        "kind": "method",
+        "template": "send(${value})",
+        "params": [
+            "value"
+        ]
+    },
+    {
+        "key": "Channel.recv",
+        "label": "recv",
+        "detail": "()",
+        "signature": "Channel.recv()",
+        "doc": "Block until a value is available, then return it. After `close()`, an empty channel yields `none` instead of blocking.",
+        "kind": "method",
+        "template": "recv()"
+    },
+    {
+        "key": "Channel.close",
+        "label": "close",
+        "detail": "()",
+        "signature": "Channel.close()",
+        "doc": "Stop new sends. Waiters wake; `.recv()` then returns `none` once the queue is empty. Idempotent.",
+        "kind": "method",
+        "template": "close()"
+    },
+    {
+        "key": "Channel.recv_timeout",
+        "label": "recv_timeout",
+        "detail": "(seconds)",
+        "signature": "Channel.recv_timeout(seconds: Float): Option",
+        "doc": "Wait up to `seconds` for a value. None on timeout or closed-and-empty.",
+        "kind": "method",
+        "template": "recv_timeout(${seconds})",
+        "params": [
+            "seconds"
+        ]
+    },
+    {
+        "key": "Task.wait",
+        "label": "wait",
+        "detail": "(seconds)",
+        "signature": "Task.wait(seconds: Float): Option",
+        "doc": "Wait up to `seconds` for a spawned task. Some(result) on finish; None on timeout (the task can still be awaited later).",
+        "kind": "method",
+        "template": "wait(${seconds})",
+        "params": [
+            "seconds"
         ]
     }
 ]
