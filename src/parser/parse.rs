@@ -1564,6 +1564,21 @@ impl Parser {
         false
     }
 
+    /// `{ "key": value }` after a call — map argument, not a trailing `{ }` block.
+    fn is_map_literal_start(&self) -> bool {
+        if !self.at(TokenKind::LBrace) {
+            return false;
+        }
+        let Some(t1) = self.tokens.get(self.pos + 1) else {
+            return false;
+        };
+        matches!(t1.kind, TokenKind::StringLit(_))
+            && self
+                .tokens
+                .get(self.pos + 2)
+                .is_some_and(|t| t.kind == TokenKind::Colon)
+    }
+
     /// `{ … }` as a zero-param lambda (trailing closure).
     fn parse_trailing_lambda(&mut self) -> Result<Expr, String> {
         let span = self.span();
@@ -1630,6 +1645,15 @@ impl Parser {
             } else if self.consume(TokenKind::Question) {
                 expr = Self::expr(ExprKind::Try(Box::new(expr)), span);
             } else if self.at(TokenKind::LBrace) {
+                let can_take_arg = matches!(
+                    expr.kind,
+                    ExprKind::Call { .. } | ExprKind::Ident(_) | ExprKind::Member { .. }
+                );
+                if self.allow_trailing_closure && can_take_arg && self.is_map_literal_start() {
+                    let map = self.parse_primary()?;
+                    expr = Self::append_trailing_closure(expr, map, span);
+                    continue;
+                }
                 let trailing = self.allow_trailing_closure
                     && (matches!(expr.kind, ExprKind::Call { .. })
                         || (matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Member { .. })
@@ -1732,7 +1756,7 @@ impl Parser {
                         let value = self.with_trailing(true, Self::parse_expr)?;
                         entries.push(key);
                         entries.push(value);
-                        if !self.consume(TokenKind::Comma) {
+                        if !self.consume(TokenKind::Comma) || self.at(TokenKind::RBrace) {
                             break;
                         }
                     }

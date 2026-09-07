@@ -161,10 +161,11 @@ Require `import`:
 | `path` | `join(a, b)`, `dirname(p)`, `ext(p)` |
 | `http` | `get(url)` / `post(url, body)` → `Result` (body or error) |
 | `regex` | `is_match(pattern, text)` / `find(pattern, text)` → `Result` |
+| `ui` | `theme` / `alert` / `window` / `column` / `text` / `button` / `run()` (crate `.rg` wrapping `__ui`; native-only) |
 
 JSON objects become `Map`, arrays `Array`, `null` becomes `none`. `Option.None` stringifies as `null`.
 
-Crate `.rg` stdlib: `math`, `str`, `vec`, `option`, `result`, `checks`.
+Crate `.rg` stdlib: `math`, `str`, `vec`, `option`, `result`, `checks`, `ui`.
 
 ## Concurrency
 
@@ -238,4 +239,33 @@ fn main(): Int {
 }
 ```
 
-Runnable walkthrough: [`examples/tour.rg`](../examples/tour.rg). JSON only: [`examples/json.rg`](../examples/json.rg). Concurrency: [`examples/concurrency.rg`](../examples/concurrency.rg).
+## UI
+
+`import ui` is write-once egui (same script on Windows / macOS / Linux). Widgets do not look native. `ui.run()` stays on the main thread and opens the window — do not `spawn` the UI. Click handlers run on that same thread. Alerts are an egui modal (OK / backdrop click dismisses). Headless tests can call `theme` / `alert` / widgets / `__ui.pump()` without `run()`.
+
+```rg
+import ui;
+
+fn main(): Int {
+    ui.theme({
+        "bg": "#1b1b1b",
+        "text": "#f2e6dc",
+        "accent": "#c45c26",
+        "font_size": 14,
+    });
+    ui.window("Demo") {
+        ui.column {
+            ui.text("Hello");
+            ui.button("OK") { ui.alert("hi"); }
+                .padding(8)
+                .color("#c45c26")
+                .width(120);
+        };
+    };
+    return ui.run();
+}
+```
+
+`ui.column { … }` / `ui.window("Demo") { … }` is a trailing-closure scope. `.padding` / `.color` / `.bg` / `.width` / `.height` / `.font_size` / `.disabled` are handle modifiers. Custom widgets are ordinary functions, not a View protocol.
+
+Runnable walkthrough: [`examples/tour.rg`](../examples/tour.rg). JSON only: [`examples/json.rg`](../examples/json.rg). Concurrency: [`examples/concurrency.rg`](../examples/concurrency.rg). UI without a window: [`examples/ui.rg`](../examples/ui.rg). Live window (blocks until you close it): `rosegold run examples/ui_window.rg` or `cargo run --offline -- run examples/ui_window.rg`.

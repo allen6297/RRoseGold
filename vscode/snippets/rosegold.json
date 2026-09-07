@@ -293,6 +293,13 @@
     ],
     "description": "Import regex (is_match, find)"
   },
+  "Import ui": {
+    "prefix": "importui",
+    "body": [
+      "import ui;"
+    ],
+    "description": "Import ui (theme, alert, window, button, run)"
+  },
   "Spawn": {
     "prefix": "spawn",
     "body": [

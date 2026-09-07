@@ -12,7 +12,7 @@ Work for RoseGold that is not happening yet. Language and host APIs first; UI an
 6. ~~Remaining host modules (`path`, `http`, `regex`)~~ — done (`path.join`/`dirname`/`ext`, `http.get`/`post`, `regex.is_match`/`find`)
 7. ~~Concurrency polish~~ — done (`Channel.close`, recv-after-close `none`, `recv_timeout` / `Task.wait`)
 8. Ship the editor
-9. Portable `ui` (needs 1–2 and opaque handles)
+9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered.
 10. `rosegold vendor` when people share `.rg` files
 
 Bytecode / JIT only if something is actually slow after that.
@@ -86,7 +86,7 @@ fn main(): Int {
                 .padding(8)
                 .color("#c45c26")
                 .width(120);
-        }
+        };
     };
     return ui.run();
 }

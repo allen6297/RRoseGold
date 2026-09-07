@@ -1,5 +1,5 @@
 //! Call dispatch: builtins, instance methods, UFCS, and host modules
-//! (`io`, `time`, `process`, `json`, `path`, `http`, `regex`, `__math`, `__str`).
+//! (`io`, `time`, `process`, `json`, `path`, `http`, `regex`, `__math`, `__str`, `__ui`).
 
 use std::collections::HashMap;
 
@@ -1148,6 +1148,7 @@ impl super::eval::EvalContext {
                     )),
                 }
             }
+            ("__ui", name) => self.ui_host(name, args, span),
             ("__math", "atan2") => {
                 if args.len() != 2 {
                     return Err(runtime_err(

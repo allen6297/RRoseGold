@@ -4,6 +4,7 @@ mod dispatch;
 mod eval;
 mod ops;
 mod resolver;
+mod ui_host;
 mod value;
 
 pub use eval::{Environment, EvalContext};

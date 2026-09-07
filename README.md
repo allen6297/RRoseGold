@@ -20,6 +20,8 @@ rosegold run examples/tour.rg
 rosegold run examples/json.rg
 rosegold run examples/signals.rg
 rosegold run examples/concurrency.rg
+rosegold run examples/ui.rg
+rosegold run examples/ui_window.rg
 rosegold test examples/tests.rg
 rosegold
 ```
@@ -29,11 +31,11 @@ rosegold
 | Path | Role |
 |---|---|
 | `src/` | Language crate and CLI (`check`, `run`, `test`, `fmt`, `hover`, `def`, REPL) |
-| `stdlib/` | Embedded `.rg` modules (`math`, `option`, `result`, `str`, `vec`, `checks`) |
+| `stdlib/` | Embedded `.rg` modules (`math`, `option`, `result`, `str`, `vec`, `checks`, `ui`) |
 | `examples/` | Sample scripts |
 | `vscode/` | Language support for VS Code / Cursor |
 
-Host modules `io`, `time`, `process`, `json`, `path`, `http`, and `regex` are native. Everything else in stdlib is `.rg`.
+Host modules `io`, `time`, `process`, `json`, `path`, `http`, and `regex` are native. `ui` is `.rg` wrapping `__ui` (egui, native-only). Everything else in stdlib is `.rg`. `examples/ui.rg` is headless (used by tests). `examples/ui_window.rg` opens a real window — run it with `rosegold run examples/ui_window.rg` (or `cargo run --offline -- run examples/ui_window.rg`); do not add it to CI example runners.
 
 `rosegold` with no command starts a REPL (each line is typechecked; `import` uses the current directory). `rosegold run file.rg args…` puts the script path and extra args in `process.argv()`. Runtime errors list the call stack with file names.
 

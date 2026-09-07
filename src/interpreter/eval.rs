@@ -8,6 +8,7 @@ use crate::{RuntimeError, Span};
 
 use super::ops::*;
 use super::resolver::*;
+use super::ui_host::UiState;
 use super::value::*;
 
 /// Program data shared by every spawned task.
@@ -20,7 +21,7 @@ pub(super) struct SharedState {
     live_tasks: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
-struct SharedData {
+pub(crate) struct SharedData {
     functions: HashMap<String, FnDecl>,
     methods: HashMap<String, HashMap<String, FnDecl>>,
     stdlib: HashMap<String, HashMap<String, Value>>,
@@ -33,6 +34,7 @@ struct SharedData {
     imported_host: HashSet<String>,
     argv: Vec<String>,
     signal_listeners: HashMap<String, Vec<Value>>,
+    pub(crate) ui: UiState,
 }
 
 impl SharedData {
@@ -50,6 +52,7 @@ impl SharedData {
             imported_host: HashSet::new(),
             argv: Vec::new(),
             signal_listeners: HashMap::new(),
+            ui: UiState::new(),
         }
     }
 }
@@ -190,11 +193,11 @@ impl EvalContext {
         self.shared.module_resolver.clone()
     }
 
-    fn data<R>(&self, f: impl FnOnce(&SharedData) -> R) -> R {
+    pub(crate) fn data<R>(&self, f: impl FnOnce(&SharedData) -> R) -> R {
         f(&lock(&self.shared.data))
     }
 
-    fn data_mut<R>(&self, f: impl FnOnce(&mut SharedData) -> R) -> R {
+    pub(crate) fn data_mut<R>(&self, f: impl FnOnce(&mut SharedData) -> R) -> R {
         f(&mut lock(&self.shared.data))
     }
 
@@ -599,6 +602,7 @@ impl EvalContext {
             d.stdlib.insert("path".to_string(), HashMap::new());
             d.stdlib.insert("http".to_string(), HashMap::new());
             d.stdlib.insert("regex".to_string(), HashMap::new());
+            d.stdlib.insert("__ui".to_string(), HashMap::new());
             d.stdlib.insert("Array".to_string(), HashMap::new());
         });
     }
@@ -1567,7 +1571,7 @@ impl EvalContext {
         }
     }
 
-    pub(super) fn call_value(
+    pub(crate) fn call_value(
         &mut self,
         f: Value,
         args: Vec<Value>,

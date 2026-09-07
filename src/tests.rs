@@ -57,6 +57,8 @@ fn check_tour_and_json_rg_are_clean() {
         "signals.rg",
         "process.rg",
         "concurrency.rg",
+        "ui.rg",
+        "ui_window.rg",
     ] {
         let diags = check_file(&example(name));
         assert!(diags.is_empty(), "{name}: {diags:?}");
@@ -245,6 +247,7 @@ fn embedded_stdlib_is_crate_rg() {
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "result"));
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "str"));
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "vec"));
+    assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "ui"));
     assert!(!crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "node"));
 }
 
@@ -3278,6 +3281,7 @@ fn run_examples_ok() {
         "json.rg",
         "signals.rg",
         "concurrency.rg",
+        "ui.rg",
     ] {
         let result = run_file(&example(name));
         assert!(result.ok, "{name}: {}", result.stderr);
@@ -4463,3 +4467,164 @@ fn main(): Int {
     );
     assert_eq!(out.trim(), "true\ntrue");
 }
+
+#[test]
+fn ui_requires_import() {
+    let diags = check_source("fn main(): Int { ui.alert(\"x\"); return 0; }\n", "t.rg");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui") || d.message.contains("undefined")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_ui_arity_and_unknown() {
+    let diags = check_source(
+        r#"
+import ui;
+fn main(): Int {
+    ui.alert();
+    ui.window("x");
+    ui.button("OK");
+    ui.column();
+    ui.theme();
+    ui.run(1);
+    ui.dialog("x");
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.alert") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.window") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.button") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.run") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("dialog")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_ui_import_is_clean() {
+    let diags = check_source(
+        r##"
+import ui;
+fn main(): Int {
+    ui.theme({ "bg": "#1b1b1b", "text": "#f2e6dc", "font_size": 14 });
+    ui.window("Demo") {
+        ui.column {
+            ui.text("Hello");
+            ui.button("OK") { ui.alert("hi"); }
+                .padding(8)
+                .color("#c45c26")
+                .width(120);
+        };
+    };
+    return ui.run();
+}
+"##,
+        "t.rg",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn ui_theme_alert_and_modifiers_headless() {
+    let out = assert_ok(
+        r##"
+import ui;
+fn main(): Int {
+    var t = ui.theme({ "bg": "#1b1b1b", "accent": "#c45c26", "font_size": 14 });
+    print(t["bg"]);
+    print(__ui.theme_get()["accent"]);
+    ui.alert("hi");
+    match __ui.last_alert() {
+        Some(s) { print(s); }
+        None { print("none"); }
+    }
+    var h = ui.text("Hello")
+        .padding(8)
+        .color("#c45c26")
+        .bg("#111111")
+        .width(120)
+        .height(24)
+        .font_size(16)
+        .disabled(true);
+    print(h.style["padding"]);
+    print(h.style["color"]);
+    print(h.style["width"]);
+    print(h.style["disabled"]);
+    return 0;
+}
+"##,
+    );
+    assert_eq!(
+        out.trim(),
+        "#1b1b1b\n#c45c26\nhi\n8\n#c45c26\n120\ntrue"
+    );
+}
+
+#[test]
+fn ui_run_without_window_is_zero() {
+    let out = assert_ok(
+        r#"
+import ui;
+fn main(): Int {
+    print(ui.run());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "0");
+}
+
+#[test]
+fn ui_pump_runs_window_body_without_display() {
+    let out = assert_ok(
+        r#"
+import ui;
+fn main(): Int {
+    ui.window("Demo") {
+        ui.column {
+            ui.text("Hello");
+            ui.button("OK") { ui.alert("from-button"); };
+        };
+        ui.alert("from-body");
+    };
+    __ui.pump();
+    match __ui.last_alert() {
+        Some(s) { print(s); }
+        None { print("none"); }
+    }
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "from-body");
+}
+

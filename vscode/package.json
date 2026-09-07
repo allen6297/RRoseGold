@@ -2,7 +2,7 @@
   "name": "rosegold",
   "displayName": "RoseGold",
   "description": "Language support for the RoseGold programming language",
-    "version": "1.0.0",
+    "version": "1.0.1",
   "publisher": "rosegold",
   "license": "MIT",
   "repository": {

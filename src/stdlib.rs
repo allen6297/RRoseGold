@@ -1,5 +1,5 @@
 //! Crate-embedded public stdlib (`.rg`). Host APIs (`io`, `time`, `process`, `json`, `path`, `http`, `regex`) stay native.
-//! Trig / string search stay a thin primitive table (`__math`, `__str`).
+//! Trig / string search stay a thin primitive table (`__math`, `__str`). UI paint is `__ui`.
 
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("str", include_str!("../stdlib/str.rg")),
     ("checks", include_str!("../stdlib/checks.rg")),
     ("vec", include_str!("../stdlib/vec.rg")),
+    ("ui", include_str!("../stdlib/ui.rg")),
 ];
 
 pub fn sources_map() -> HashMap<String, String> {
@@ -27,6 +28,7 @@ pub fn is_host_module(name: &str) -> bool {
     matches!(
         name,
         "io" | "time" | "process" | "json" | "path" | "http" | "regex" | "__math" | "__str"
+            | "__ui"
     )
 }
 
@@ -45,13 +47,14 @@ pub fn canonical_module(name: &str) -> Option<&'static str> {
         "str" => Some("str"),
         "checks" => Some("checks"),
         "vec" | "Vec2" | "Vec3" => Some("vec"),
+        "ui" => Some("ui"),
         _ => None,
     }
 }
 
 /// Host primitives used only inside crate stdlib (`.rg` wrappers). Always in scope.
 pub fn is_internal_host(name: &str) -> bool {
-    matches!(name, "__math" | "__str")
+    matches!(name, "__math" | "__str" | "__ui")
 }
 
 /// Language constructors with qualified statics (`Array.first(xs)`). Always in scope.

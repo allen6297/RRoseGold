@@ -34,7 +34,7 @@ npm run package
 | Go to Definition | F12 / Cmd-click via `rosegold def` (`import utils` → that file; `utils.move_line` → the fn) |
 | Hover | Host/stdlib from `catalog.json`; user symbols from `rosegold hover` (`##` text when present) |
 | Signature help | Catalog params while typing `(` / `,` (`math.clamp`, `io.read_text`, `time.now`, …) |
-| Completions | keywords, builtins, `math.` / `str.` / `io.` / `time.` / `process.` / `json.` / `path.` / `http.` / `regex.` / `checks.` / `option` / `result` members, crate types (`Vec2`, `Vec3`, `Mutex`, `Channel`, `Task`), locals |
+| Completions | keywords, builtins, `math.` / `str.` / `io.` / `time.` / `process.` / `json.` / `path.` / `http.` / `regex.` / `ui.` / `checks.` / `option` / `result` members, crate types (`Vec2`, `Vec3`, `Mutex`, `Channel`, `Task`), locals |
 | Outline | `fn` / `struct` / `class` / `trait` / `impl` / `enum` / `signal` / `var` |
 | Snippets | `fn`, `class`, `trait`, `@ufcs`, `.emit`, `signal`, `match`, `@test`, … |
 | Run File | play button / **RoseGold: Run File** (`rosegold run`) |

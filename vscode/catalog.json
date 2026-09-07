@@ -1046,6 +1046,181 @@
         ]
     },
     {
+        "key": "ui",
+        "label": "ui",
+        "detail": "stdlib",
+        "signature": "import ui",
+        "doc": "Portable immediate-mode UI (egui). Requires `import ui;`. Same script on Windows / macOS / Linux. Widgets do not look native. `ui.run()` stays on the main thread and is not supported on wasm32. Do not `spawn` the UI.",
+        "kind": "module"
+    },
+    {
+        "key": "ui.theme",
+        "label": "theme",
+        "detail": "(map)",
+        "signature": "ui.theme(map: Map): Map",
+        "doc": "Apply a theme map (`bg`, `text`, `accent`, `font_size`) to the next `ui.run()`. Widgets inherit unless a modifier overrides.",
+        "kind": "function",
+        "template": "theme(${map})",
+        "params": [
+            "map"
+        ]
+    },
+    {
+        "key": "ui.alert",
+        "label": "alert",
+        "detail": "(msg)",
+        "signature": "ui.alert(msg: String)",
+        "doc": "Queue a message. During `ui.run()` it stays as an egui modal until OK (or backdrop click). `__ui.last_alert()` still works headless. Does not open a window by itself.",
+        "kind": "function",
+        "template": "alert(${msg})",
+        "params": [
+            "msg"
+        ]
+    },
+    {
+        "key": "ui.window",
+        "label": "window",
+        "detail": "(title, body)",
+        "signature": "ui.window(title: String, body: Fn): Widget",
+        "doc": "Register a window. The trailing-closure body runs every frame inside `ui.run()`.",
+        "kind": "function",
+        "template": "window(${title}) { $0 }",
+        "params": [
+            "title",
+            "body"
+        ]
+    },
+    {
+        "key": "ui.column",
+        "label": "column",
+        "detail": "(body)",
+        "signature": "ui.column(body: Fn): Widget",
+        "doc": "Vertical stack. `ui.column { … }` is a trailing-closure parent scope.",
+        "kind": "function",
+        "template": "column { $0 }",
+        "params": [
+            "body"
+        ]
+    },
+    {
+        "key": "ui.text",
+        "label": "text",
+        "detail": "(s)",
+        "signature": "ui.text(s: String): Widget",
+        "doc": "Label. Chain `.padding` / `.color` / `.font_size` on the returned handle.",
+        "kind": "function",
+        "template": "text(${s})",
+        "params": [
+            "s"
+        ]
+    },
+    {
+        "key": "ui.button",
+        "label": "button",
+        "detail": "(label, action)",
+        "signature": "ui.button(label: String, action: Fn): Widget",
+        "doc": "Button. `ui.button(\"OK\") { … }` is a trailing-closure click handler. Modifiers (`.padding`, `.color`, `.width`, …) return the same handle.",
+        "kind": "function",
+        "template": "button(${label}) { $0 }",
+        "params": [
+            "label",
+            "action"
+        ]
+    },
+    {
+        "key": "ui.run",
+        "label": "run",
+        "detail": "()",
+        "signature": "ui.run(): Int",
+        "doc": "Main-thread event loop. Opens a window when one was registered. Returns 0 if there is no window. Not supported on wasm32. Do not call from `spawn`.",
+        "kind": "function",
+        "template": "run()"
+    },
+    {
+        "key": "Widget.padding",
+        "label": "padding",
+        "detail": "(n)",
+        "signature": "Widget.padding(n: Int): Widget",
+        "doc": "Inner padding in pixels. Returns the same handle.",
+        "kind": "method",
+        "template": "padding(${n})",
+        "params": [
+            "n"
+        ]
+    },
+    {
+        "key": "Widget.color",
+        "label": "color",
+        "detail": "(c)",
+        "signature": "Widget.color(c: String): Widget",
+        "doc": "Foreground / fill hex color (`#c45c26`). Returns the same handle.",
+        "kind": "method",
+        "template": "color(${c})",
+        "params": [
+            "c"
+        ]
+    },
+    {
+        "key": "Widget.bg",
+        "label": "bg",
+        "detail": "(c)",
+        "signature": "Widget.bg(c: String): Widget",
+        "doc": "Background hex color. Returns the same handle.",
+        "kind": "method",
+        "template": "bg(${c})",
+        "params": [
+            "c"
+        ]
+    },
+    {
+        "key": "Widget.width",
+        "label": "width",
+        "detail": "(n)",
+        "signature": "Widget.width(n: Int): Widget",
+        "doc": "Minimum width in pixels. Returns the same handle.",
+        "kind": "method",
+        "template": "width(${n})",
+        "params": [
+            "n"
+        ]
+    },
+    {
+        "key": "Widget.height",
+        "label": "height",
+        "detail": "(n)",
+        "signature": "Widget.height(n: Int): Widget",
+        "doc": "Minimum height in pixels. Returns the same handle.",
+        "kind": "method",
+        "template": "height(${n})",
+        "params": [
+            "n"
+        ]
+    },
+    {
+        "key": "Widget.font_size",
+        "label": "font_size",
+        "detail": "(n)",
+        "signature": "Widget.font_size(n: Int): Widget",
+        "doc": "Override theme font size. Returns the same handle.",
+        "kind": "method",
+        "template": "font_size(${n})",
+        "params": [
+            "n"
+        ]
+    },
+    {
+        "key": "Widget.disabled",
+        "label": "disabled",
+        "detail": "(on)",
+        "signature": "Widget.disabled(on: Bool): Widget",
+        "doc": "Disable the widget when `on` is true. Returns the same handle.",
+        "kind": "method",
+        "template": "disabled(${on})",
+        "params": [
+            "on"
+        ]
+    },
+    {
         "key": "Task.wait",
         "label": "wait",
         "detail": "(seconds)",

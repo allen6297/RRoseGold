@@ -376,6 +376,33 @@ fn trailing_closure_after_member_call() {
 }
 
 #[test]
+fn trailing_map_after_member_call() {
+    let kind = first_expr("fn main(): Int { ui.theme({ \"bg\": \"x\" }); return 0; }\n");
+    let ExprKind::Call { callee, args } = &kind else {
+        panic!("{kind:?}")
+    };
+    assert!(matches!(callee.kind, ExprKind::Member { .. }), "{callee:?}");
+    assert_eq!(args.len(), 1);
+    assert!(matches!(&args[0].kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "Map")));
+}
+
+#[test]
+fn trailing_closure_then_method() {
+    let kind = first_expr(
+        "fn main(): Int { ui.button(\"OK\") { print(1); }.padding(8); return 0; }\n",
+    );
+    let ExprKind::Call { callee, args } = &kind else {
+        panic!("{kind:?}")
+    };
+    assert_eq!(args.len(), 1);
+    let ExprKind::Member { object, name } = &callee.kind else {
+        panic!("{:?}", callee.kind)
+    };
+    assert_eq!(name, "padding");
+    assert!(matches!(object.kind, ExprKind::Call { .. }));
+}
+
+#[test]
 fn struct_literal_not_trailing_closure() {
     assert!(matches!(
         first_expr("fn main(): Int { var p = Point {}; return 0; }\n"),
@@ -407,6 +434,16 @@ fn if_while_for_match_keep_their_blocks() {
             ..
         })
     ));
+}
+
+#[test]
+fn map_literal_trailing_comma() {
+    let kind = first_expr("fn main(): Int { var m = { \"a\": 1, }; return 0; }\n");
+    let ExprKind::Call { callee, args } = &kind else {
+        panic!("{kind:?}")
+    };
+    assert!(matches!(&callee.kind, ExprKind::Ident(n) if n == "Map"));
+    assert_eq!(args.len(), 2);
 }
 
 #[test]
