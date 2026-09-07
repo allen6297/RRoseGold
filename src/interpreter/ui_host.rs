@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::{RuntimeError, Span};
 
 use super::eval::EvalContext;
-use super::ops::{option_none, option_some, runtime_err};
+use super::ops::{option_none, option_some, runtime_err, value_eq};
 use super::value::*;
 
 pub(crate) struct UiState {
@@ -18,6 +18,15 @@ pub(crate) struct UiState {
     children: HashMap<usize, Vec<Value>>,
     actions: HashMap<usize, Value>,
     frame_error: Option<String>,
+    quit: bool,
+    invalidate: bool,
+    dirty: bool,
+    /// Values returned to the script last pump (`pass current`).
+    input_out: Vec<Value>,
+    /// Values painted last frame (`get next`).
+    input_in: Vec<Value>,
+    input_cursor: usize,
+    paint_cursor: usize,
 }
 
 struct UiWindow {
@@ -36,6 +45,47 @@ impl UiState {
             children: HashMap::new(),
             actions: HashMap::new(),
             frame_error: None,
+            quit: false,
+            invalidate: false,
+            dirty: false,
+            input_out: Vec::new(),
+            input_in: Vec::new(),
+            input_cursor: 0,
+            paint_cursor: 0,
+        }
+    }
+
+    fn push_child(&mut self, handle: Value) {
+        if let Some(&parent) = self.stack.last() {
+            self.children.entry(parent).or_default().push(handle);
+        }
+    }
+
+    fn take_input(&mut self, current: Value) -> Value {
+        let idx = self.input_cursor;
+        self.input_cursor += 1;
+        let next = match (self.input_out.get(idx), self.input_in.get(idx)) {
+            (Some(out), Some(painted)) if value_eq(out, &current) => painted.clone(),
+            _ => current,
+        };
+        if idx < self.input_out.len() {
+            self.input_out[idx] = next.clone();
+        } else {
+            self.input_out.push(next.clone());
+        }
+        next
+    }
+
+    fn store_painted(&mut self, value: Value, changed: bool) {
+        let idx = self.paint_cursor;
+        self.paint_cursor += 1;
+        if idx < self.input_in.len() {
+            self.input_in[idx] = value;
+        } else {
+            self.input_in.push(value);
+        }
+        if changed {
+            self.dirty = true;
         }
     }
 }
@@ -68,6 +118,43 @@ fn style_map(handle: &Value) -> HashMap<String, Value> {
         Some(Value::Map(m)) => lock(&m).clone(),
         _ => HashMap::new(),
     }
+}
+
+fn set_field(handle: &Value, name: &str, val: Value) {
+    match handle {
+        Value::Struct { fields, .. } => {
+            lock(fields).insert(name.to_string(), val);
+        }
+        Value::Map(m) => {
+            lock(m).insert(name.to_string(), val);
+        }
+        _ => {}
+    }
+}
+
+fn set_style_entry(handle: &Value, key: &str, val: Value) {
+    match field(handle, "style") {
+        Some(Value::Map(m)) => {
+            lock(&m).insert(key.to_string(), val);
+        }
+        _ => {}
+    }
+}
+
+fn style_bool(handle: &Value, key: &str) -> bool {
+    matches!(style_map(handle).get(key), Some(Value::Bool(true)))
+}
+
+fn style_float(handle: &Value, key: &str) -> f64 {
+    match style_map(handle).get(key) {
+        Some(Value::Float(n)) => *n,
+        Some(Value::Int(n)) => *n as f64,
+        _ => 0.0,
+    }
+}
+
+fn slider_range(min: f64, max: f64) -> (f64, f64) {
+    if min <= max { (min, max) } else { (max, min) }
 }
 
 impl EvalContext {
@@ -177,14 +264,68 @@ impl EvalContext {
                 if args.len() != 1 {
                     return Err(runtime_err("__ui.widget takes 1 argument", span));
                 }
-                self.data_mut(|d| {
-                    if let Some(&parent) = d.ui.stack.last() {
-                        d.ui.children
-                            .entry(parent)
-                            .or_default()
-                            .push(args[0].clone());
-                    }
+                self.data_mut(|d| d.ui.push_child(args[0].clone()));
+                Ok(Value::Void)
+            }
+            "field" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("__ui.field takes 1 argument", span));
+                }
+                if handle_id(&args[0]).is_none() {
+                    return Err(runtime_err("__ui.field expects a widget handle", span));
+                }
+                let current = field_str(&args[0], "label");
+                let next = self.data_mut(|d| {
+                    d.ui.push_child(args[0].clone());
+                    d.ui.take_input(Value::String(current))
                 });
+                set_field(&args[0], "label", next.clone());
+                Ok(next)
+            }
+            "checkbox" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("__ui.checkbox takes 1 argument", span));
+                }
+                if handle_id(&args[0]).is_none() {
+                    return Err(runtime_err("__ui.checkbox expects a widget handle", span));
+                }
+                let current = style_bool(&args[0], "on");
+                let next = self.data_mut(|d| {
+                    d.ui.push_child(args[0].clone());
+                    d.ui.take_input(Value::Bool(current))
+                });
+                set_style_entry(&args[0], "on", next.clone());
+                Ok(next)
+            }
+            "slider" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("__ui.slider takes 1 argument", span));
+                }
+                if handle_id(&args[0]).is_none() {
+                    return Err(runtime_err("__ui.slider expects a widget handle", span));
+                }
+                let (lo, hi) =
+                    slider_range(style_float(&args[0], "min"), style_float(&args[0], "max"));
+                let current = style_float(&args[0], "value").clamp(lo, hi);
+                let next = self.data_mut(|d| {
+                    d.ui.push_child(args[0].clone());
+                    d.ui.take_input(Value::Float(current))
+                });
+                set_style_entry(&args[0], "value", next.clone());
+                Ok(next)
+            }
+            "quit" => {
+                if !args.is_empty() {
+                    return Err(runtime_err("__ui.quit takes 0 arguments", span));
+                }
+                self.data_mut(|d| d.ui.quit = true);
+                Ok(Value::Void)
+            }
+            "invalidate" => {
+                if !args.is_empty() {
+                    return Err(runtime_err("__ui.invalidate takes 0 arguments", span));
+                }
+                self.data_mut(|d| d.ui.invalidate = true);
                 Ok(Value::Void)
             }
             "bind" => {
@@ -227,6 +368,7 @@ impl EvalContext {
             d.ui.children.clear();
             d.ui.actions.clear();
             d.ui.stack.clear();
+            d.ui.input_cursor = 0;
         });
         let windows = self.data(|d| {
             d.ui.windows
@@ -265,17 +407,17 @@ mod native {
     use std::any::Any;
     use std::cell::Cell;
     use std::collections::HashMap;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::ptr::NonNull;
 
     use eframe::egui::{
-        self, Button, CentralPanel, Color32, Context, Frame, Modal, RichText, ViewportCommand,
-        Window,
+        self, Button, CentralPanel, Color32, Context, Frame, Modal, RichText, Slider, TextEdit,
+        ViewportCommand, Window,
     };
 
     use crate::{RuntimeError, Span};
 
-    use super::{field_str, handle_id, runtime_err, style_map, EvalContext, Value};
+    use super::{EvalContext, Value, field_str, handle_id, runtime_err, style_map};
 
     thread_local! {
         static UI_EVAL: Cell<Option<NonNull<EvalContext>>> = const { Cell::new(None) };
@@ -365,8 +507,6 @@ mod native {
                 eval.data_mut(|d| d.ui.frame_error = Some(e.message.clone()));
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);
             }
-            // Immediate mode: window/column bodies run again next frame.
-            ui.ctx().request_repaint();
         }
     }
 
@@ -374,6 +514,7 @@ mod native {
         let theme = eval.data(|d| d.ui.theme.clone());
         apply_theme(ui.ctx(), &theme);
         eval.ui_pump(span)?;
+        eval.data_mut(|d| d.ui.paint_cursor = 0);
 
         let windows = eval.data(|d| {
             d.ui.windows
@@ -396,6 +537,19 @@ mod native {
         }
 
         show_alerts(eval, ui.ctx());
+
+        let (quit, need_repaint) = eval.data_mut(|d| {
+            let quit = d.ui.quit;
+            let need = d.ui.invalidate || d.ui.dirty;
+            d.ui.invalidate = false;
+            d.ui.dirty = false;
+            (quit, need)
+        });
+        if quit {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        } else if need_repaint {
+            ui.ctx().request_repaint();
+        }
         Ok(())
     }
 
@@ -414,6 +568,7 @@ mod native {
                 if !d.ui.alerts.is_empty() {
                     d.ui.alerts.remove(0);
                 }
+                d.ui.dirty = true;
             });
         }
     }
@@ -465,6 +620,16 @@ mod native {
                         }
                     });
                 }
+                "row" => {
+                    ui.horizontal(|ui| {
+                        let kids = id
+                            .and_then(|id| eval.data(|d| d.ui.children.get(&id).cloned()))
+                            .unwrap_or_default();
+                        for child in kids {
+                            paint_node(eval, ui, &child);
+                        }
+                    });
+                }
                 "button" => {
                     let label = styled_text(field_str(handle, "label"), &style);
                     let mut btn = Button::new(label);
@@ -485,7 +650,39 @@ mod native {
                                 }
                             }
                         }
+                        eval.data_mut(|d| d.ui.dirty = true);
                     }
+                }
+                "field" => {
+                    let mut text = field_str(handle, "label");
+                    let idx = eval.data(|d| d.ui.paint_cursor);
+                    let mut edit =
+                        TextEdit::singleline(&mut text).id(egui::Id::new(("rg_field", idx)));
+                    if let Some(w) = map_number(&style, "width") {
+                        edit = edit.desired_width(w);
+                    }
+                    let changed = ui.add(edit).changed();
+                    eval.data_mut(|d| d.ui.store_painted(Value::String(text), changed));
+                }
+                "checkbox" => {
+                    let mut on = matches!(style.get("on"), Some(Value::Bool(true)));
+                    let label = field_str(handle, "label");
+                    let changed = ui.checkbox(&mut on, label).changed();
+                    eval.data_mut(|d| d.ui.store_painted(Value::Bool(on), changed));
+                }
+                "slider" => {
+                    let mut value = map_number(&style, "value").unwrap_or(0.0);
+                    let min = map_number(&style, "min").unwrap_or(0.0);
+                    let max = map_number(&style, "max").unwrap_or(1.0);
+                    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+                    let changed = ui.add(Slider::new(&mut value, lo..=hi)).changed();
+                    eval.data_mut(|d| d.ui.store_painted(Value::Float(value as f64), changed));
+                }
+                "separator" => {
+                    ui.separator();
+                }
+                "spacer" => {
+                    ui.add_space(map_number(&style, "height").unwrap_or(8.0));
                 }
                 _ => {
                     let label = styled_text(field_str(handle, "label"), &style);

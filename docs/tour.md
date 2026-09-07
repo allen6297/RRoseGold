@@ -161,7 +161,7 @@ Require `import`:
 | `path` | `join(a, b)`, `dirname(p)`, `ext(p)` |
 | `http` | `get(url)` / `post(url, body)` → `Result` (body or error) |
 | `regex` | `is_match(pattern, text)` / `find(pattern, text)` → `Result` |
-| `ui` | `theme` / `alert` / `window` / `column` / `text` / `button` / `run()` (crate `.rg` wrapping `__ui`; native-only) |
+| `ui` | `theme` / `alert` / `window` / `column` / `row` / `text` / `field` / `button` / `checkbox` / `slider` / `separator` / `spacer` / `quit` / `invalidate` / `run()` (crate `.rg` wrapping `__ui`; native-only) |
 
 JSON objects become `Map`, arrays `Array`, `null` becomes `none`. `Option.None` stringifies as `null`.
 
@@ -241,7 +241,7 @@ fn main(): Int {
 
 ## UI
 
-`import ui` is write-once egui (same script on Windows / macOS / Linux). Widgets do not look native. `ui.run()` stays on the main thread and opens the window — do not `spawn` the UI. Click handlers run on that same thread. Alerts are an egui modal (OK / backdrop click dismisses). Headless tests can call `theme` / `alert` / widgets / `__ui.pump()` without `run()`.
+`import ui` is write-once egui (same script on Windows / macOS / Linux). Widgets do not look native. `ui.run()` stays on the main thread and opens the window — do not `spawn` the UI. Click handlers run on that same thread. Alerts are an egui modal (OK / backdrop click dismisses). Headless tests can call `theme` / `alert` / widgets / `__ui.pump()` without `run()`. Immediate-mode inputs pass current and return next (`name = ui.field(name)`). `ui.quit()` closes from a button. The window waits for input; call `ui.invalidate()` if a script needs a frame without one.
 
 ```rg
 import ui;
@@ -253,19 +253,30 @@ fn main(): Int {
         "accent": "#c45c26",
         "font_size": 14,
     });
+    var name = "hi";
+    var on = false;
+    var vol = 0.5;
     ui.window("Demo") {
         ui.column {
-            ui.text("Hello");
+            ui.row {
+                ui.text("Name");
+                name = ui.field(name);
+            };
+            on = ui.checkbox("Loud", on);
+            vol = ui.slider(vol, 0.0, 1.0);
+            ui.separator();
+            ui.spacer();
             ui.button("OK") { ui.alert("hi"); }
                 .padding(8)
                 .color("#c45c26")
                 .width(120);
+            ui.button("Quit") { ui.quit(); };
         };
     };
     return ui.run();
 }
 ```
 
-`ui.column { … }` / `ui.window("Demo") { … }` is a trailing-closure scope. `.padding` / `.color` / `.bg` / `.width` / `.height` / `.font_size` / `.disabled` are handle modifiers. Custom widgets are ordinary functions, not a View protocol.
+`ui.column { … }` / `ui.row { … }` / `ui.window("Demo") { … }` is a trailing-closure scope. `.padding` / `.color` / `.bg` / `.width` / `.height` / `.font_size` / `.disabled` are handle modifiers. Custom widgets are ordinary functions, not a View protocol.
 
 Runnable walkthrough: [`examples/tour.rg`](../examples/tour.rg). JSON only: [`examples/json.rg`](../examples/json.rg). Concurrency: [`examples/concurrency.rg`](../examples/concurrency.rg). UI without a window: [`examples/ui.rg`](../examples/ui.rg). Live window (blocks until you close it): `rosegold run examples/ui_window.rg` or `cargo run --offline -- run examples/ui_window.rg`.

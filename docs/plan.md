@@ -12,7 +12,7 @@ Work for RoseGold that is not happening yet. Language and host APIs first; UI an
 6. ~~Remaining host modules (`path`, `http`, `regex`)~~ — done (`path.join`/`dirname`/`ext`, `http.get`/`post`, `regex.is_match`/`find`)
 7. ~~Concurrency polish~~ — done (`Channel.close`, recv-after-close `none`, `recv_timeout` / `Task.wait`)
 8. Ship the editor
-9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered.
+9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, row, field/checkbox/slider, separator/spacer, `quit`/`invalidate`, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered.
 10. `rosegold vendor` when people share `.rg` files
 
 Bytecode / JIT only if something is actually slow after that.
@@ -107,6 +107,28 @@ fn primary_button(u: Ui, label: String, action: Fn) {
 ```
 
 Callbacks on the interpreter thread. **First surface:** alert → window → button/label → `run()`, then theme + v1 modifiers. Not a layout engine, design system, drawing API, or OS dark/light sync.
+
+**Next surface**
+
+v1 opens a window and takes a click. Tiny apps still need input, the other parent, and a way to leave. Same rule: `.rg` wrappers, host only for the primitive. Immediate mode — pass current, get next. No bindings.
+
+- ~~**`ui.row { … }`**~~ — done (`column` exists; this is the other parent).
+- ~~**`ui.field(s)`**~~ — done (text; `String` in, next `String` out).
+- ~~**`ui.checkbox(label, on)`**~~ — done (`Bool`).
+- ~~**`ui.slider(value, min, max)`**~~ — done (`Float` + range).
+- ~~**`ui.separator` / `ui.spacer`**~~ — done (a line or a gap. Not flexbox).
+- ~~**`ui.quit()`**~~ — done (close from a button).
+- ~~**Idle**~~ — done (wait for egui events; `ui.invalidate()` when a script needs a frame).
+
+Later, still one call each:
+
+- **`ui.select(options, current)`** — list of strings → chosen string.
+- **`ui.scroll { … }`** — wrap a column/row.
+- **File picker** — `ui.open` / `ui.save` → `Option`/`Result` path. Scripts care.
+- **`ui.progress(t)`** — `0..1` if cheap.
+- A second window or a dialog besides `alert` is optional. Do not invent a window manager.
+
+Still not: canvas, animation, routing, menus-as-a-platform, tray, shaders, an a11y tree as a project, OS dark/light sync.
 
 ## 7. Vendor, not a registry
 

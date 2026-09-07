@@ -3934,8 +3934,9 @@ fn main(): Int {
         "t.rg",
     );
     assert!(
-        diags.iter().any(|d| d.message.contains("Channel.close")
-            && d.message.contains("expected 0 args")),
+        diags
+            .iter()
+            .any(|d| d.message.contains("Channel.close") && d.message.contains("expected 0 args")),
         "{diags:?}"
     );
     assert!(
@@ -4489,6 +4490,14 @@ fn main(): Int {
     ui.window("x");
     ui.button("OK");
     ui.column();
+    ui.row();
+    ui.field();
+    ui.checkbox("x");
+    ui.slider(0.0);
+    ui.separator(1);
+    ui.spacer(1);
+    ui.quit(1);
+    ui.invalidate(1);
     ui.theme();
     ui.run(1);
     ui.dialog("x");
@@ -4524,7 +4533,35 @@ fn main(): Int {
     assert!(
         diags
             .iter()
-            .any(|d| d.message.contains("dialog")),
+            .any(|d| d.message.contains("ui.field") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.checkbox") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.slider") && d.message.contains("expected 3 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.row") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.quit") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("dialog")),
         "{diags:?}"
     );
 }
@@ -4536,15 +4573,28 @@ fn typecheck_ui_import_is_clean() {
 import ui;
 fn main(): Int {
     ui.theme({ "bg": "#1b1b1b", "text": "#f2e6dc", "font_size": 14 });
+    var name = "hi";
+    var on = false;
+    var vol = 0.5;
     ui.window("Demo") {
         ui.column {
             ui.text("Hello");
+            ui.row {
+                ui.text("Name");
+                name = ui.field(name);
+            };
+            on = ui.checkbox("Loud", on);
+            vol = ui.slider(vol, 0.0, 1.0);
+            ui.separator();
+            ui.spacer();
             ui.button("OK") { ui.alert("hi"); }
                 .padding(8)
                 .color("#c45c26")
                 .width(120);
+            ui.button("Quit") { ui.quit(); };
         };
     };
+    ui.invalidate();
     return ui.run();
 }
 "##,
@@ -4583,10 +4633,7 @@ fn main(): Int {
 }
 "##,
     );
-    assert_eq!(
-        out.trim(),
-        "#1b1b1b\n#c45c26\nhi\n8\n#c45c26\n120\ntrue"
-    );
+    assert_eq!(out.trim(), "#1b1b1b\n#c45c26\nhi\n8\n#c45c26\n120\ntrue");
 }
 
 #[test]
@@ -4628,3 +4675,37 @@ fn main(): Int {
     assert_eq!(out.trim(), "from-body");
 }
 
+#[test]
+fn ui_pump_next_surface_headless() {
+    let out = assert_ok(
+        r#"
+import ui;
+fn main(): Int {
+    var name = "hi";
+    var on = false;
+    var vol = 0.5;
+    ui.window("Demo") {
+        ui.column {
+            ui.row {
+                ui.text("Name");
+                name = ui.field(name);
+            };
+            on = ui.checkbox("Loud", on);
+            vol = ui.slider(vol, 0.0, 1.0);
+            ui.separator();
+            ui.spacer();
+            ui.button("Quit") { ui.quit(); };
+        };
+        ui.invalidate();
+    };
+    __ui.pump();
+    print(name);
+    print(on);
+    print(vol);
+    ui.quit();
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "hi\nfalse\n0.5");
+}

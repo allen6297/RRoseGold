@@ -67,10 +67,24 @@ pub mod ui {
         return h;
     }
 
+    pub fn row(body: Fn): Widget {
+        var h = Widget { kind: "row" };
+        __ui.widget(h);
+        __ui.begin(h);
+        body();
+        __ui.end();
+        return h;
+    }
+
     pub fn text(s: String): Widget {
         var h = Widget { kind: "text", label: s };
         __ui.widget(h);
         return h;
+    }
+
+    pub fn field(s: String): String {
+        var h = Widget { kind: "field", label: s };
+        return __ui.field(h);
     }
 
     pub fn button(label: String, action: Fn): Widget {
@@ -78,6 +92,40 @@ pub mod ui {
         __ui.widget(h);
         __ui.bind(h, action);
         return h;
+    }
+
+    pub fn checkbox(label: String, on: Bool): Bool {
+        var h = Widget { kind: "checkbox", label: label };
+        h.style["on"] = on;
+        return __ui.checkbox(h);
+    }
+
+    pub fn slider(value: Float, min: Float, max: Float): Float {
+        var h = Widget { kind: "slider" };
+        h.style["value"] = value;
+        h.style["min"] = min;
+        h.style["max"] = max;
+        return __ui.slider(h);
+    }
+
+    pub fn separator(): Widget {
+        var h = Widget { kind: "separator" };
+        __ui.widget(h);
+        return h;
+    }
+
+    pub fn spacer(): Widget {
+        var h = Widget { kind: "spacer" };
+        __ui.widget(h);
+        return h;
+    }
+
+    pub fn quit() {
+        __ui.quit();
+    }
+
+    pub fn invalidate() {
+        __ui.invalidate();
     }
 
     pub fn run(): Int {

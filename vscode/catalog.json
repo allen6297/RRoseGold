@@ -1050,7 +1050,7 @@
         "label": "ui",
         "detail": "stdlib",
         "signature": "import ui",
-        "doc": "Portable immediate-mode UI (egui). Requires `import ui;`. Same script on Windows / macOS / Linux. Widgets do not look native. `ui.run()` stays on the main thread and is not supported on wasm32. Do not `spawn` the UI.",
+        "doc": "Portable immediate-mode UI (egui). Requires `import ui;`. Same script on Windows / macOS / Linux. Widgets do not look native. `ui.run()` stays on the main thread and is not supported on wasm32. Do not `spawn` the UI. Immediate-mode inputs (`field` / `checkbox` / `slider`) pass current and return next. `ui.quit()` closes; `ui.invalidate()` requests a frame without input.",
         "kind": "module"
     },
     {
@@ -1103,6 +1103,18 @@
         ]
     },
     {
+        "key": "ui.row",
+        "label": "row",
+        "detail": "(body)",
+        "signature": "ui.row(body: Fn): Widget",
+        "doc": "Horizontal stack. `ui.row { … }` is a trailing-closure parent scope, like `column`.",
+        "kind": "function",
+        "template": "row { $0 }",
+        "params": [
+            "body"
+        ]
+    },
+    {
         "key": "ui.text",
         "label": "text",
         "detail": "(s)",
@@ -1110,6 +1122,18 @@
         "doc": "Label. Chain `.padding` / `.color` / `.font_size` on the returned handle.",
         "kind": "function",
         "template": "text(${s})",
+        "params": [
+            "s"
+        ]
+    },
+    {
+        "key": "ui.field",
+        "label": "field",
+        "detail": "(s)",
+        "signature": "ui.field(s: String): String",
+        "doc": "Single-line text input. Pass the current string; returns the next string. Immediate mode: `name = ui.field(name);`. Lives in a column/row like `text`.",
+        "kind": "function",
+        "template": "field(${s})",
         "params": [
             "s"
         ]
@@ -1126,6 +1150,69 @@
             "label",
             "action"
         ]
+    },
+    {
+        "key": "ui.checkbox",
+        "label": "checkbox",
+        "detail": "(label, on)",
+        "signature": "ui.checkbox(label: String, on: Bool): Bool",
+        "doc": "Checkbox. Pass the current bool; returns the next bool. Immediate mode: `on = ui.checkbox(\"Loud\", on);`.",
+        "kind": "function",
+        "template": "checkbox(${label}, ${on})",
+        "params": [
+            "label",
+            "on"
+        ]
+    },
+    {
+        "key": "ui.slider",
+        "label": "slider",
+        "detail": "(value, min, max)",
+        "signature": "ui.slider(value: Float, min: Float, max: Float): Float",
+        "doc": "Slider. Pass the current float and range; returns the next float. Immediate mode: `vol = ui.slider(vol, 0.0, 1.0);`.",
+        "kind": "function",
+        "template": "slider(${value}, ${min}, ${max})",
+        "params": [
+            "value",
+            "min",
+            "max"
+        ]
+    },
+    {
+        "key": "ui.separator",
+        "label": "separator",
+        "detail": "()",
+        "signature": "ui.separator(): Widget",
+        "doc": "A thin dividing line. Not a layout engine.",
+        "kind": "function",
+        "template": "separator()"
+    },
+    {
+        "key": "ui.spacer",
+        "label": "spacer",
+        "detail": "()",
+        "signature": "ui.spacer(): Widget",
+        "doc": "A small gap. Chain `.height(n)` for a custom size. Not flexbox.",
+        "kind": "function",
+        "template": "spacer()"
+    },
+    {
+        "key": "ui.quit",
+        "label": "quit",
+        "detail": "()",
+        "signature": "ui.quit()",
+        "doc": "Close the app from a button (or anywhere in the window body). Sets a flag so eframe exits. `ui.run()` stays on the main thread.",
+        "kind": "function",
+        "template": "quit()"
+    },
+    {
+        "key": "ui.invalidate",
+        "label": "invalidate",
+        "detail": "()",
+        "signature": "ui.invalidate()",
+        "doc": "Request another frame without waiting for input. The window is idle until egui events, a changed input, an alert change, or this call.",
+        "kind": "function",
+        "template": "invalidate()"
     },
     {
         "key": "ui.run",
