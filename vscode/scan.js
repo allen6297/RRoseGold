@@ -371,7 +371,13 @@ function membersFor(file, files, pos, receiver) {
     ? classMembers(enclosing, files).signals.includes(receiver)
     : false;
   if (fromClass || isSignalName(file, files, receiver)) {
-    return { kind: "list", items: [{ name: "emit", role: "emit" }] };
+    return {
+      kind: "list",
+      items: [
+        { name: "emit", role: "emit" },
+        { name: "connect", role: "connect" },
+      ],
+    };
   }
   const typeName = typeOfLocal(file, receiver);
   if (typeName) {

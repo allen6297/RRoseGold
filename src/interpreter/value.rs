@@ -77,6 +77,10 @@ pub enum Value {
         module: String,
         name: String,
     },
+    /// Free function used as a value (`collected.connect(on_coin)`).
+    FnRef {
+        name: String,
+    },
     Struct {
         name: String,
         fields: Rc<RefCell<HashMap<String, Value>>>,
@@ -112,6 +116,7 @@ impl Value {
             }
             Value::Module(_) => true,
             Value::NativeFn { .. } => true,
+            Value::FnRef { .. } => true,
             Value::Struct { .. } => true,
             Value::StructType(_) => true,
             Value::EnumType(_) => true,
@@ -137,6 +142,7 @@ impl Value {
             } => format!("{}.{}", module, variant),
             Value::Module(_) => "Module".to_string(),
             Value::NativeFn { module, name } => format!("{}.{}", module, name),
+            Value::FnRef { name } => format!("fn {name}"),
             Value::Struct { name, .. } => name.clone(),
             Value::StructType(s) => s.name.clone(),
             Value::EnumType(e) => e.name.clone(),
@@ -192,6 +198,7 @@ impl Value {
                     .join(", ")
             ),
             Value::NativeFn { module, name } => format!("{}.{}", module, name),
+            Value::FnRef { name } => format!("fn {name}"),
             Value::Struct { name, fields } => {
                 let parts: Vec<String> = fields
                     .borrow()

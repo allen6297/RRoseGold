@@ -111,6 +111,17 @@ impl FileModuleResolver {
     }
 }
 
+/// Paths the file resolver tries for `import name` (docs / error text).
+pub fn module_lookup_hint(name: &str) -> String {
+    let stem = name.strip_suffix(".rg").unwrap_or(name);
+    let dotted = stem.replace('.', "/");
+    if dotted == stem {
+        format!("{stem}.rg or {stem}/lib.rg")
+    } else {
+        format!("{stem}.rg, {dotted}.rg, or {dotted}/lib.rg")
+    }
+}
+
 impl ModuleResolver for FileModuleResolver {
     fn resolve_all(&self, name: &str) -> Vec<(String, String)> {
         let std = crate::stdlib::resolve(name);

@@ -22,7 +22,7 @@ The extension looks for `target/debug/rosegold` or `target/release/rosegold` wal
 ```bash
 cd vscode
 npm run package
-# installs as: cursor --install-extension rosegold-0.7.0.vsix
+# installs as: cursor --install-extension rosegold-0.7.4.vsix
 ```
 
 ## Features
@@ -34,7 +34,7 @@ npm run package
 | Go to Definition | F12 / Cmd-click via `rosegold def` (`import utils` → that file; `utils.move_line` → the fn) |
 | Hover | Host/stdlib from `catalog.json`; user symbols from `rosegold hover` (`##` text when present) |
 | Signature help | Catalog params while typing `(` / `,` (`math.clamp`, `io.read_text`, `time.now`, …) |
-| Completions | keywords, builtins, `math.` / `str.` / `io.` / `time.` / `checks.` / `option` / `result` members, crate types (`Vec2`, `Vec3`), locals |
+| Completions | keywords, builtins, `math.` / `str.` / `io.` / `time.` / `process.` / `json.` / `checks.` / `option` / `result` members, crate types (`Vec2`, `Vec3`), locals |
 | Outline | `fn` / `struct` / `class` / `trait` / `impl` / `enum` / `signal` / `var` |
 | Snippets | `fn`, `class`, `trait`, `@ufcs`, `.emit`, `signal`, `match`, `@test`, … |
 | Run File | play button / **RoseGold: Run File** (`rosegold run`) |
@@ -59,6 +59,10 @@ npm test
 
 ## Changelog
 
+**0.7.4** — Snippets for `import process` / `import json`. Host catalog already covers `argv` / `env` / `exit` and `parse` / `stringify`.
+**0.7.3** — `signal.connect(fn)`: emit runs listeners in connect order.
+**0.7.2** — `json.parse` / `json.stringify`; language tour (`docs/tour.md`, `examples/tour.rg`).
+**0.7.1** — `process.argv` / `env` / `exit`, `rosegold` REPL, extra args after `run <file>`.
 **0.7.0** — Standalone language: dropped Strata/`input`/`ui`/`@node`/`@export` host APIs. Kept `io`, `time`, and crate stdlib.
 **0.6.3** — F12 / Cmd-click on `import utils`, `from utils import move_line`, and dotted `import util.math`.
 **0.6.2** — `@node class` snippet and completions; catalog covers crate `Node` / `Sprite` / …; `@node` highlights like `@ufcs`.

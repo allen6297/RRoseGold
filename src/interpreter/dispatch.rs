@@ -1,5 +1,5 @@
 //! Call dispatch: builtins, instance methods, UFCS, and host modules
-//! (`io`, `time`, `__math`, `__str`).
+//! (`io`, `time`, `process`, `json`, `__math`, `__str`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,6 +23,9 @@ impl super::eval::EvalContext {
         }) = self.env.get(name)
         {
             return self.call_qualified(&module, &fn_name, args, span);
+        }
+        if let Some(Value::FnRef { name: fn_name }) = self.env.get(name) {
+            return self.call_fn(&fn_name, args, span);
         }
         match name {
             "print" => {
@@ -117,24 +120,52 @@ impl super::eval::EvalContext {
             arity,
         } = object
         {
-            if name != "emit" {
-                return Err(runtime_err(
-                    format!("signal '{signal}' has no method '{name}'"),
-                    span,
-                ));
+            let signal = signal.clone();
+            let arity = *arity;
+            match name {
+                "emit" => {
+                    if _args.len() != arity {
+                        return Err(runtime_err(
+                            format!(
+                                "signal '{signal}' expected {arity} args, got {}",
+                                _args.len()
+                            ),
+                            span,
+                        ));
+                    }
+                    return self.emit_signal(&signal, _args, span);
+                }
+                "connect" => {
+                    if _args.len() != 1 {
+                        return Err(runtime_err(
+                            format!("signal '{signal}' connect takes 1 argument"),
+                            span,
+                        ));
+                    }
+                    let listener = match &_args[0] {
+                        Value::FnRef { name } => name.clone(),
+                        other => {
+                            return Err(runtime_err(
+                                format!(
+                                    "signal '{signal}' connect expects a function, got {}",
+                                    other.type_name()
+                                ),
+                                span,
+                            ));
+                        }
+                    };
+                    self.connect_signal(&signal, &listener, arity, span)?;
+                    return Ok(Value::Void);
+                }
+                _ => {
+                    return Err(runtime_err(
+                        format!("signal '{signal}' has no method '{name}'"),
+                        span,
+                    ));
+                }
             }
-            if _args.len() != *arity {
-                return Err(runtime_err(
-                    format!(
-                        "signal '{signal}' expected {arity} args, got {}",
-                        _args.len()
-                    ),
-                    span,
-                ));
-            }
-            return Ok(Value::Void);
         }
-        if name == "emit" {
+        if name == "emit" || name == "connect" {
             return Err(runtime_err("unknown signal".to_string(), span));
         }
         // User-defined methods on structs/enums (impl blocks)
@@ -715,6 +746,69 @@ impl super::eval::EvalContext {
                     ));
                 }
                 Ok(Value::Float(self.started.elapsed_secs()))
+            }
+            ("process", "argv") => {
+                if !args.is_empty() {
+                    return Err(runtime_err(
+                        "process.argv takes 0 arguments".to_string(),
+                        span,
+                    ));
+                }
+                let values: Vec<Value> = self.argv().iter().cloned().map(Value::String).collect();
+                Ok(Value::Array(Rc::new(RefCell::new(values))))
+            }
+            ("process", "env") => {
+                if args.len() != 1 {
+                    return Err(runtime_err(
+                        "process.env takes 1 argument".to_string(),
+                        span,
+                    ));
+                }
+                let name = expect_string_arg(&args, 0, "process.env", "name", span)?;
+                Ok(match process_env(&name) {
+                    Some(value) => option_some(Value::String(value)),
+                    None => option_none(),
+                })
+            }
+            ("process", "exit") => {
+                if args.len() != 1 {
+                    return Err(runtime_err(
+                        "process.exit takes 1 argument".to_string(),
+                        span,
+                    ));
+                }
+                let code = match &args[0] {
+                    Value::Int(n) => *n as i32,
+                    _ => {
+                        return Err(runtime_err(
+                            format!("process.exit expects Int, got {}", args[0].type_name()),
+                            span,
+                        ));
+                    }
+                };
+                Err(exit_err(code, span))
+            }
+            ("json", "parse") => {
+                if args.len() != 1 {
+                    return Err(runtime_err("json.parse takes 1 argument".to_string(), span));
+                }
+                let text = expect_string_arg(&args, 0, "json.parse", "text", span)?;
+                Ok(match json_parse(&text) {
+                    Ok(v) => result_ok(v),
+                    Err(e) => result_err(e),
+                })
+            }
+            ("json", "stringify") => {
+                if args.len() != 1 {
+                    return Err(runtime_err(
+                        "json.stringify takes 1 argument".to_string(),
+                        span,
+                    ));
+                }
+                Ok(match json_stringify(&args[0]) {
+                    Ok(s) => result_ok(Value::String(s)),
+                    Err(e) => result_err(e),
+                })
             }
             ("Array", "first") => {
                 if args.len() != 1 {

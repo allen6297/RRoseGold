@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::Span;
 use crate::interpreter::{HashMapResolver, ModuleResolver};
 use crate::lexer::{Lexer, Token, TokenKind};
-use crate::parser::{FnDecl, Item, Parser, SignalDecl, Type};
+use crate::parser::{Block, ClassDecl, FnDecl, Item, Parser, SignalDecl, StmtKind, Type, VarDecl};
 
 /// Definition / hover payload for a name at a source position.
 /// `file` is the module key (`utils` / `utils.rg`) or the current file label.
@@ -37,6 +37,9 @@ pub fn symbol_at(
     if let Some(info) = import_site_at(&tokens, line, col, &modules) {
         return Some(info);
     }
+    if let Some(info) = doc_comment_symbol(source, file, &tokens, line, col) {
+        return Some(info);
+    }
     let ident = ident_at(&tokens, line, col)?;
     let program = Parser::new(tokens.clone()).parse().ok()?;
     let binds = import_binds(&program);
@@ -50,7 +53,16 @@ pub fn symbol_at(
         if let Some(info) = export_in_module(canonical, &ident.name, &modules) {
             return Some(info);
         }
-        return None;
+        return member_symbol(
+            source,
+            file,
+            &program,
+            &module,
+            &ident.name,
+            line,
+            col,
+            &modules,
+        );
     }
 
     if let Some(bind) = binds.iter().find(|b| b.bind == ident.name) {
@@ -63,7 +75,8 @@ pub fn symbol_at(
         return module_symbol(&bind.canonical, &modules);
     }
 
-    local_symbol(source, file, &ident.name).or_else(|| prelude_symbol(&ident.name, &modules))
+    local_symbol(source, file, &ident.name, line, col)
+        .or_else(|| prelude_symbol(&ident.name, &modules))
 }
 
 fn prelude_symbol(name: &str, modules: &HashMap<String, String>) -> Option<SymbolInfo> {
@@ -249,6 +262,75 @@ fn import_site_at(
     })
 }
 
+fn doc_comment_symbol(
+    source: &str,
+    file: &str,
+    tokens: &[Token],
+    line: u32,
+    col: u32,
+) -> Option<SymbolInfo> {
+    let idx = tokens.iter().position(|t| token_covers(t, line, col))?;
+    if !matches!(tokens[idx].kind, TokenKind::DocComment(_)) {
+        return None;
+    }
+    let i = skip_leading_trivia(tokens, idx);
+    let (name, span) = match tokens.get(i).map(|t| &t.kind) {
+        Some(
+            TokenKind::Var
+            | TokenKind::Const
+            | TokenKind::Fn
+            | TokenKind::Class
+            | TokenKind::Struct
+            | TokenKind::Trait
+            | TokenKind::Enum
+            | TokenKind::Mod
+            | TokenKind::Signal,
+        ) => {
+            let name_tok = tokens.get(i + 1)?;
+            let TokenKind::Ident(name) = &name_tok.kind else {
+                return None;
+            };
+            (name.as_str(), name_tok.span)
+        }
+        Some(TokenKind::Ident(name)) => (name.as_str(), tokens[i].span),
+        _ => return None,
+    };
+    local_symbol(source, file, name, span.line, span.col)
+}
+
+fn skip_leading_trivia(tokens: &[Token], mut i: usize) -> usize {
+    loop {
+        match tokens.get(i).map(|t| &t.kind) {
+            Some(TokenKind::DocComment(_) | TokenKind::Comment(_) | TokenKind::Pub) => i += 1,
+            Some(TokenKind::At) => {
+                i += 1;
+                if matches!(tokens.get(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+                    i += 1;
+                }
+                if matches!(tokens.get(i).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                    let mut depth = 0i32;
+                    while i < tokens.len() {
+                        match tokens[i].kind {
+                            TokenKind::LParen => depth += 1,
+                            TokenKind::RParen => {
+                                depth -= 1;
+                                i += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            _ => return i,
+        }
+    }
+}
+
 fn ident_at(tokens: &[Token], line: u32, col: u32) -> Option<IdentAt> {
     for (i, tok) in tokens.iter().enumerate() {
         if !token_covers(tok, line, col) {
@@ -325,7 +407,7 @@ fn export_in_module(
                     decl_span(&source, TokenKind::Var, name).map(|span| {
                         (
                             "var",
-                            format!("var {}: {}", v.name, type_string(&v.ty)),
+                            var_signature(&v.name, &v.ty),
                             span,
                             v.doc.clone(),
                         )
@@ -399,113 +481,751 @@ fn module_symbol(canonical: &str, modules: &HashMap<String, String>) -> Option<S
     ))
 }
 
-fn local_symbol(source: &str, file: &str, name: &str) -> Option<SymbolInfo> {
+fn local_symbol(source: &str, file: &str, name: &str, line: u32, col: u32) -> Option<SymbolInfo> {
     let program = parse_items(source)?;
-    for item in &program {
+    let mut hits = Vec::new();
+    collect_item_hits(
+        &program,
+        source,
+        file,
+        name,
+        Span { line: 1, col: 1 },
+        0,
+        &mut hits,
+    );
+    pick_hit(&hits, line, col)
+}
+
+struct Hit {
+    depth: u32,
+    info: SymbolInfo,
+}
+
+fn pick_hit(hits: &[Hit], line: u32, col: u32) -> Option<SymbolInfo> {
+    if hits.is_empty() {
+        return None;
+    }
+    if let Some(hit) = hits.iter().find(|h| name_covers(&h.info, line, col)) {
+        return Some(hit.info.clone());
+    }
+    hits.iter()
+        .filter(|h| pos_le(h.info.line, h.info.col, line, col))
+        .max_by_key(|h| (h.depth, h.info.line, h.info.col))
+        .or_else(|| {
+            hits.iter()
+                .max_by_key(|h| (h.depth, h.info.line, h.info.col))
+        })
+        .map(|h| h.info.clone())
+}
+
+fn name_covers(info: &SymbolInfo, line: u32, col: u32) -> bool {
+    if info.line != line {
+        return false;
+    }
+    let len = info.name.chars().count() as u32;
+    col >= info.col && col < info.col + len
+}
+
+fn pos_le(a_line: u32, a_col: u32, b_line: u32, b_col: u32) -> bool {
+    a_line < b_line || (a_line == b_line && a_col <= b_col)
+}
+
+fn push_hit(
+    hits: &mut Vec<Hit>,
+    depth: u32,
+    kind: &str,
+    name: &str,
+    signature: String,
+    file: &str,
+    span: Span,
+    doc: Option<String>,
+) {
+    hits.push(Hit {
+        depth,
+        info: symbol_info(kind, name, signature, file.to_string(), span, doc),
+    });
+}
+
+fn collect_item_hits(
+    items: &[Item],
+    source: &str,
+    file: &str,
+    name: &str,
+    from: Span,
+    depth: u32,
+    hits: &mut Vec<Hit>,
+) {
+    for item in items {
         match item {
-            Item::FnDecl(f) if f.name == name => {
-                let span = decl_span(source, TokenKind::Fn, name)?;
-                return Some(symbol_info(
-                    "fn",
-                    name,
-                    fn_signature(f),
-                    file.to_string(),
-                    span,
-                    f.doc.clone(),
-                ));
+            Item::FnDecl(f) => {
+                if f.name == name {
+                    if let Some(span) = decl_span_from(source, TokenKind::Fn, name, from) {
+                        push_hit(
+                            hits,
+                            depth,
+                            "fn",
+                            name,
+                            fn_signature(f),
+                            file,
+                            span,
+                            f.doc.clone(),
+                        );
+                    }
+                }
+                collect_block_hits(&f.body, source, file, name, depth + 1, hits);
             }
             Item::VarDecl(v) if v.name == name => {
-                let span = decl_span(source, TokenKind::Var, name)?;
-                return Some(symbol_info(
-                    "var",
-                    name,
-                    format!("var {}: {}", v.name, type_string(&v.ty)),
-                    file.to_string(),
-                    span,
-                    v.doc.clone(),
-                ));
+                if let Some(span) = decl_span_from(source, TokenKind::Var, name, from) {
+                    push_hit(
+                        hits,
+                        depth,
+                        "var",
+                        name,
+                        var_signature(&v.name, &v.ty),
+                        file,
+                        span,
+                        v.doc.clone(),
+                    );
+                }
             }
             Item::ConstDecl(c) if c.name == name => {
-                let span = decl_span(source, TokenKind::Const, name)?;
-                return Some(symbol_info(
-                    "const",
-                    name,
-                    format!("const {}", c.name),
-                    file.to_string(),
-                    span,
-                    c.doc.clone(),
-                ));
+                if let Some(span) = decl_span_from(source, TokenKind::Const, name, from) {
+                    push_hit(
+                        hits,
+                        depth,
+                        "const",
+                        name,
+                        format!("const {}", c.name),
+                        file,
+                        span,
+                        c.doc.clone(),
+                    );
+                }
             }
-            Item::StructDecl(s) if s.name == name => {
-                let span = decl_span(source, TokenKind::Struct, name)?;
-                return Some(symbol_info(
-                    "struct",
-                    name,
-                    format!("struct {}", s.name),
-                    file.to_string(),
-                    span,
-                    s.doc.clone(),
-                ));
+            Item::StructDecl(s) => {
+                if s.name == name {
+                    if let Some(span) = decl_span_from(source, TokenKind::Struct, name, from) {
+                        push_hit(
+                            hits,
+                            depth,
+                            "struct",
+                            name,
+                            format!("struct {}", s.name),
+                            file,
+                            span,
+                            s.doc.clone(),
+                        );
+                    }
+                }
+                let struct_from =
+                    decl_span_from(source, TokenKind::Struct, &s.name, from).unwrap_or(from);
+                for f in &s.fields {
+                    if f.name == name {
+                        if let Some(span) = ident_colon_in_body(source, name, struct_from) {
+                            push_hit(
+                                hits,
+                                depth + 1,
+                                "var",
+                                name,
+                                format!("{}: {}", f.name, type_string(&f.ty)),
+                                file,
+                                span,
+                                f.doc.clone(),
+                            );
+                        }
+                    }
+                }
             }
-            Item::ClassDecl(c) if c.name == name => {
-                let span = decl_span(source, TokenKind::Class, name)?;
-                return Some(symbol_info(
-                    "class",
-                    name,
-                    format!("class {}", c.name),
-                    file.to_string(),
-                    span,
-                    c.doc.clone(),
-                ));
+            Item::ClassDecl(c) => {
+                if c.name == name {
+                    if let Some(span) = decl_span_from(source, TokenKind::Class, name, from) {
+                        push_hit(
+                            hits,
+                            depth,
+                            "class",
+                            name,
+                            format!("class {}", c.name),
+                            file,
+                            span,
+                            c.doc.clone(),
+                        );
+                    }
+                }
+                for f in &c.fields {
+                    if f.name == name {
+                        if let Some(span) = var_ident_in_body(source, name, c.span) {
+                            push_hit(
+                                hits,
+                                depth + 1,
+                                "var",
+                                name,
+                                var_signature(&f.name, &f.ty),
+                                file,
+                                span,
+                                f.doc.clone(),
+                            );
+                        }
+                    }
+                }
+                for m in c.all_methods() {
+                    if m.name == name {
+                        if let Some(span) = decl_span_from(source, TokenKind::Fn, name, c.span) {
+                            push_hit(
+                                hits,
+                                depth + 1,
+                                "fn",
+                                name,
+                                fn_signature(m),
+                                file,
+                                span,
+                                m.doc.clone(),
+                            );
+                        }
+                    }
+                    collect_block_hits(&m.body, source, file, name, depth + 2, hits);
+                }
             }
             Item::TraitDecl(t) => {
                 if t.name == name {
-                    let span = decl_span(source, TokenKind::Trait, name)?;
-                    return Some(symbol_info(
-                        "trait",
-                        name,
-                        format!("trait {}", t.name),
-                        file.to_string(),
-                        span,
-                        t.doc.clone(),
-                    ));
+                    if let Some(span) = decl_span_from(source, TokenKind::Trait, name, from) {
+                        push_hit(
+                            hits,
+                            depth,
+                            "trait",
+                            name,
+                            format!("trait {}", t.name),
+                            file,
+                            span,
+                            t.doc.clone(),
+                        );
+                    }
                 }
                 if let Some(s) = t.signals.iter().find(|s| s.name == name) {
-                    let span = decl_span(source, TokenKind::Signal, name)?;
-                    return Some(symbol_info(
-                        "signal",
-                        name,
-                        signal_signature(s),
-                        file.to_string(),
-                        span,
-                        s.doc.clone(),
-                    ));
+                    if let Some(span) = decl_span_from(source, TokenKind::Signal, name, from) {
+                        push_hit(
+                            hits,
+                            depth + 1,
+                            "signal",
+                            name,
+                            signal_signature(s),
+                            file,
+                            span,
+                            s.doc.clone(),
+                        );
+                    }
                 }
             }
             Item::EnumDecl(e) if e.name == name => {
-                let span = decl_span(source, TokenKind::Enum, name)?;
-                return Some(symbol_info(
-                    "enum",
-                    name,
-                    format!("enum {}", e.name),
-                    file.to_string(),
-                    span,
-                    e.doc.clone(),
-                ));
+                if let Some(span) = decl_span_from(source, TokenKind::Enum, name, from) {
+                    push_hit(
+                        hits,
+                        depth,
+                        "enum",
+                        name,
+                        format!("enum {}", e.name),
+                        file,
+                        span,
+                        e.doc.clone(),
+                    );
+                }
             }
             Item::SignalDecl(s) if s.name == name => {
-                let span = decl_span(source, TokenKind::Signal, name)?;
-                return Some(symbol_info(
-                    "signal",
-                    name,
-                    signal_signature(s),
-                    file.to_string(),
-                    span,
-                    s.doc.clone(),
-                ));
+                if let Some(span) = decl_span_from(source, TokenKind::Signal, name, from) {
+                    push_hit(
+                        hits,
+                        depth,
+                        "signal",
+                        name,
+                        signal_signature(s),
+                        file,
+                        span,
+                        s.doc.clone(),
+                    );
+                }
+            }
+            Item::Mod(m) => {
+                collect_item_hits(&m.items, source, file, name, m.span, depth + 1, hits);
+            }
+            Item::ImplDecl { methods, span, .. } => {
+                for m in methods {
+                    if m.name == name {
+                        if let Some(name_span) =
+                            decl_span_from(source, TokenKind::Fn, name, *span)
+                        {
+                            push_hit(
+                                hits,
+                                depth + 1,
+                                "fn",
+                                name,
+                                fn_signature(m),
+                                file,
+                                name_span,
+                                m.doc.clone(),
+                            );
+                        }
+                    }
+                    collect_block_hits(&m.body, source, file, name, depth + 2, hits);
+                }
             }
             _ => {}
         }
+    }
+}
+
+fn collect_block_hits(
+    block: &Block,
+    source: &str,
+    file: &str,
+    name: &str,
+    depth: u32,
+    hits: &mut Vec<Hit>,
+) {
+    for stmt in &block.stmts {
+        match &stmt.kind {
+            StmtKind::VarDecl(v) if v.name == name => {
+                if let Some(span) = decl_span_from(source, TokenKind::Var, name, stmt.span) {
+                    push_hit(
+                        hits,
+                        depth,
+                        "var",
+                        name,
+                        var_signature(&v.name, &v.ty),
+                        file,
+                        span,
+                        v.doc.clone(),
+                    );
+                }
+            }
+            StmtKind::ConstDecl(c) if c.name == name => {
+                if let Some(span) = decl_span_from(source, TokenKind::Const, name, stmt.span) {
+                    push_hit(
+                        hits,
+                        depth,
+                        "const",
+                        name,
+                        format!("const {}", c.name),
+                        file,
+                        span,
+                        c.doc.clone(),
+                    );
+                }
+            }
+            StmtKind::If {
+                then_block,
+                elif_blocks,
+                else_block,
+                ..
+            } => {
+                collect_block_hits(then_block, source, file, name, depth + 1, hits);
+                for (_, b) in elif_blocks {
+                    collect_block_hits(b, source, file, name, depth + 1, hits);
+                }
+                if let Some(b) = else_block {
+                    collect_block_hits(b, source, file, name, depth + 1, hits);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                collect_block_hits(body, source, file, name, depth + 1, hits);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn member_symbol(
+    source: &str,
+    file: &str,
+    program: &[Item],
+    receiver: &str,
+    name: &str,
+    line: u32,
+    col: u32,
+    modules: &HashMap<String, String>,
+) -> Option<SymbolInfo> {
+    if receiver == "self" || receiver == "super" {
+        let class = class_containing(program, source, line, col)?;
+        let start = if receiver == "super" {
+            class
+                .parent
+                .as_ref()
+                .and_then(|p| find_class(program, p))
+                .unwrap_or(class)
+        } else {
+            class
+        };
+        return lookup_class_member(source, file, program, start, name).or_else(|| {
+            start
+                .parent
+                .as_ref()
+                .and_then(|p| member_in_modules(modules, p, name))
+        });
+    }
+    if let Some(ty) = type_of_binding(program, receiver) {
+        return class_or_struct_member(source, file, program, &ty, name)
+            .or_else(|| member_in_modules(modules, &ty, name));
+    }
+    unique_named_member(source, file, program, name)
+}
+
+fn class_containing<'a>(
+    program: &'a [Item],
+    source: &str,
+    line: u32,
+    col: u32,
+) -> Option<&'a ClassDecl> {
+    let mut best: Option<&ClassDecl> = None;
+    for c in classes_in(program) {
+        if !contains_from(source, c.span, line, col) {
+            continue;
+        }
+        let closer = best.map_or(true, |b| {
+            b.span.line < c.span.line || (b.span.line == c.span.line && b.span.col <= c.span.col)
+        });
+        if closer {
+            best = Some(c);
+        }
+    }
+    best
+}
+
+fn classes_in(items: &[Item]) -> Vec<&ClassDecl> {
+    let mut out = Vec::new();
+    collect_classes(items, &mut out);
+    out
+}
+
+fn collect_classes<'a>(items: &'a [Item], out: &mut Vec<&'a ClassDecl>) {
+    for item in items {
+        match item {
+            Item::ClassDecl(c) => out.push(c),
+            Item::Mod(m) => collect_classes(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+fn find_class<'a>(program: &'a [Item], name: &str) -> Option<&'a ClassDecl> {
+    classes_in(program).into_iter().find(|c| c.name == name)
+}
+
+fn contains_from(source: &str, from: Span, line: u32, col: u32) -> bool {
+    let Some(end) = matching_rbrace_span(source, from) else {
+        return false;
+    };
+    pos_le(from.line, from.col, line, col) && pos_le(line, col, end.line, end.col)
+}
+
+fn matching_rbrace_span(source: &str, from: Span) -> Option<Span> {
+    let tokens = Lexer::new(source).tokenize().ok()?;
+    let mut i = skip_before(&tokens, from);
+    let mut depth = 0i32;
+    let mut started = false;
+    while i < tokens.len() {
+        match tokens[i].kind {
+            TokenKind::LBrace => {
+                depth += 1;
+                started = true;
+            }
+            TokenKind::RBrace => {
+                depth -= 1;
+                if started && depth == 0 {
+                    return Some(tokens[i].span);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn lookup_class_member(
+    source: &str,
+    file: &str,
+    program: &[Item],
+    class: &ClassDecl,
+    name: &str,
+) -> Option<SymbolInfo> {
+    if let Some(info) = direct_class_member(source, file, class, name) {
+        return Some(info);
+    }
+    class
+        .parent
+        .as_ref()
+        .and_then(|p| find_class(program, p))
+        .and_then(|parent| lookup_class_member(source, file, program, parent, name))
+}
+
+fn direct_class_member(
+    source: &str,
+    file: &str,
+    class: &ClassDecl,
+    name: &str,
+) -> Option<SymbolInfo> {
+    if let Some(f) = class.fields.iter().find(|f| f.name == name) {
+        let span = var_ident_in_body(source, name, class.span)?;
+        return Some(symbol_info(
+            "var",
+            name,
+            var_signature(&f.name, &f.ty),
+            file.to_string(),
+            span,
+            f.doc.clone(),
+        ));
+    }
+    if let Some(m) = class.all_methods().find(|m| m.name == name) {
+        let span = decl_span_from(source, TokenKind::Fn, name, class.span)?;
+        return Some(symbol_info(
+            "fn",
+            name,
+            fn_signature(m),
+            file.to_string(),
+            span,
+            m.doc.clone(),
+        ));
+    }
+    None
+}
+
+fn class_or_struct_member(
+    source: &str,
+    file: &str,
+    program: &[Item],
+    type_name: &str,
+    name: &str,
+) -> Option<SymbolInfo> {
+    if let Some(c) = find_class(program, type_name) {
+        return lookup_class_member(source, file, program, c, name);
+    }
+    for item in program {
+        match item {
+            Item::StructDecl(s) if s.name == type_name => {
+                if let Some(f) = s.fields.iter().find(|f| f.name == name) {
+                    let from = decl_span(source, TokenKind::Struct, &s.name)?;
+                    let span = ident_colon_in_body(source, name, from)?;
+                    return Some(symbol_info(
+                        "var",
+                        name,
+                        format!("{}: {}", f.name, type_string(&f.ty)),
+                        file.to_string(),
+                        span,
+                        f.doc.clone(),
+                    ));
+                }
+            }
+            Item::Mod(m) => {
+                if let Some(info) =
+                    class_or_struct_member(source, file, &m.items, type_name, name)
+                {
+                    return Some(info);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn unique_named_member(
+    source: &str,
+    file: &str,
+    program: &[Item],
+    name: &str,
+) -> Option<SymbolInfo> {
+    let mut found = Vec::new();
+    for c in classes_in(program) {
+        if let Some(info) = direct_class_member(source, file, c, name) {
+            found.push(info);
+        }
+    }
+    if found.len() == 1 {
+        found.pop()
+    } else {
+        None
+    }
+}
+
+fn member_in_modules(
+    modules: &HashMap<String, String>,
+    type_name: &str,
+    name: &str,
+) -> Option<SymbolInfo> {
+    for (file, source) in modules {
+        let Some(program) = parse_items(source) else {
+            continue;
+        };
+        if let Some(info) = class_or_struct_member(source, file, &program, type_name, name) {
+            return Some(info);
+        }
+    }
+    None
+}
+
+fn type_of_binding(items: &[Item], name: &str) -> Option<String> {
+    for item in items {
+        match item {
+            Item::VarDecl(v) if v.name == name => return type_of_var(v),
+            Item::FnDecl(f) => {
+                if let Some(t) = type_in_block(&f.body, name) {
+                    return Some(t);
+                }
+            }
+            Item::ClassDecl(c) => {
+                for m in c.all_methods() {
+                    if let Some(t) = type_in_block(&m.body, name) {
+                        return Some(t);
+                    }
+                }
+            }
+            Item::ImplDecl { methods, .. } => {
+                for m in methods {
+                    if let Some(t) = type_in_block(&m.body, name) {
+                        return Some(t);
+                    }
+                }
+            }
+            Item::Mod(m) => {
+                if let Some(t) = type_of_binding(&m.items, name) {
+                    return Some(t);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn type_of_var(v: &VarDecl) -> Option<String> {
+    if v.ty.name != "None" && !v.ty.name.is_empty() {
+        return Some(v.ty.name.clone());
+    }
+    match v.value.as_ref().map(|e| &e.kind) {
+        Some(crate::parser::ExprKind::StructLiteral { name, .. }) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn type_in_block(block: &Block, name: &str) -> Option<String> {
+    for stmt in &block.stmts {
+        match &stmt.kind {
+            StmtKind::VarDecl(v) if v.name == name => return type_of_var(v),
+            StmtKind::If {
+                then_block,
+                elif_blocks,
+                else_block,
+                ..
+            } => {
+                if let Some(t) = type_in_block(then_block, name) {
+                    return Some(t);
+                }
+                for (_, b) in elif_blocks {
+                    if let Some(t) = type_in_block(b, name) {
+                        return Some(t);
+                    }
+                }
+                if let Some(b) = else_block {
+                    if let Some(t) = type_in_block(b, name) {
+                        return Some(t);
+                    }
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                if let Some(t) = type_in_block(body, name) {
+                    return Some(t);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn skip_before(tokens: &[Token], from: Span) -> usize {
+    tokens
+        .iter()
+        .position(|t| {
+            t.span.line > from.line || (t.span.line == from.line && t.span.col >= from.col)
+        })
+        .unwrap_or(tokens.len())
+}
+
+fn decl_span_from(source: &str, kw: TokenKind, name: &str, from: Span) -> Option<Span> {
+    let tokens = Lexer::new(source).tokenize().ok()?;
+    let start = skip_before(&tokens, from);
+    for i in start..tokens.len() {
+        if tokens[i].kind != kw {
+            continue;
+        }
+        let Some(next) = tokens.get(i + 1) else {
+            continue;
+        };
+        if let TokenKind::Ident(n) = &next.kind {
+            if n == name {
+                return Some(next.span);
+            }
+        }
+    }
+    None
+}
+
+fn var_ident_in_body(source: &str, name: &str, from: Span) -> Option<Span> {
+    let tokens = Lexer::new(source).tokenize().ok()?;
+    let mut i = skip_before(&tokens, from);
+    let mut depth = 0i32;
+    let mut started = false;
+    while i < tokens.len() {
+        match tokens[i].kind {
+            TokenKind::LBrace => {
+                depth += 1;
+                started = true;
+            }
+            TokenKind::RBrace => {
+                depth -= 1;
+                if started && depth == 0 {
+                    return None;
+                }
+            }
+            TokenKind::Var if started && depth == 1 => {
+                if let Some(tok) = tokens.get(i + 1) {
+                    if let TokenKind::Ident(n) = &tok.kind {
+                        if n == name {
+                            return Some(tok.span);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn ident_colon_in_body(source: &str, name: &str, from: Span) -> Option<Span> {
+    let tokens = Lexer::new(source).tokenize().ok()?;
+    let mut i = skip_before(&tokens, from);
+    let mut depth = 0i32;
+    let mut started = false;
+    while i < tokens.len() {
+        match &tokens[i].kind {
+            TokenKind::LBrace => {
+                depth += 1;
+                started = true;
+            }
+            TokenKind::RBrace => {
+                depth -= 1;
+                if started && depth == 0 {
+                    return None;
+                }
+            }
+            TokenKind::Ident(n) if started && depth == 1 && n == name => {
+                if matches!(tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::Colon)) {
+                    return Some(tokens[i].span);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
     }
     None
 }
@@ -545,21 +1265,7 @@ fn parse_items(source: &str) -> Option<Vec<Item>> {
 }
 
 fn decl_span(source: &str, kw: TokenKind, name: &str) -> Option<Span> {
-    let tokens = Lexer::new(source).tokenize().ok()?;
-    for i in 0..tokens.len() {
-        if tokens[i].kind != kw {
-            continue;
-        }
-        let Some(next) = tokens.get(i + 1) else {
-            continue;
-        };
-        if let TokenKind::Ident(n) = &next.kind {
-            if n == name {
-                return Some(next.span);
-            }
-        }
-    }
-    None
+    decl_span_from(source, kw, name, Span { line: 1, col: 1 })
 }
 
 fn fn_signature(f: &FnDecl) -> String {
@@ -572,6 +1278,14 @@ fn fn_signature(f: &FnDecl) -> String {
     match &f.return_type {
         Some(ty) => format!("fn {}({}): {}", f.name, params, type_string(ty)),
         None => format!("fn {}({})", f.name, params),
+    }
+}
+
+fn var_signature(name: &str, ty: &Type) -> String {
+    if ty.name == "None" && ty.args.is_empty() && !ty.optional {
+        format!("var {name}")
+    } else {
+        format!("var {name}: {}", type_string(ty))
     }
 }
 
@@ -746,6 +1460,47 @@ mod tests {
         assert_eq!(info.name, "spin");
         assert_eq!(info.doc.as_deref(), Some("Degrees per second."));
         assert!(info.signature.contains("spin"));
+    }
+
+    #[test]
+    fn hover_at_var_use_shows_docs() {
+        let src = "## Degrees per second.\nvar spin: Float = 8.0;\nfn main(): Int {\n    print(spin);\n    return 0;\n}\n";
+        let info = hover_at(src, "t.rg", 4, 11, HashMap::new()).expect("hover use");
+        assert_eq!(info.name, "spin");
+        assert_eq!(info.doc.as_deref(), Some("Degrees per second."));
+    }
+
+    #[test]
+    fn hover_at_local_var_docs() {
+        let src = "fn main(): Int {\n    ## local counter\n    var n: Int = 1;\n    print(n);\n    return 0;\n}\n";
+        let on_decl = hover_at(src, "t.rg", 3, 9, HashMap::new()).expect("decl");
+        assert_eq!(on_decl.name, "n");
+        assert_eq!(on_decl.doc.as_deref(), Some("local counter"));
+        let on_use = hover_at(src, "t.rg", 4, 11, HashMap::new()).expect("use");
+        assert_eq!(on_use.doc.as_deref(), Some("local counter"));
+    }
+
+    #[test]
+    fn hover_at_class_field_docs() {
+        let src = "class Point {\n    ## X component\n    var x: Float = 0.0;\n    fn get(self): Float {\n        return self.x;\n    }\n}\nfn main(): Int {\n    var p = Point { x: 1.0 };\n    print(p.x);\n    return 0;\n}\n";
+        let on_field = hover_at(src, "t.rg", 3, 9, HashMap::new()).expect("field");
+        assert_eq!(on_field.name, "x");
+        assert_eq!(on_field.doc.as_deref(), Some("X component"));
+        let on_self = hover_at(src, "t.rg", 5, 21, HashMap::new()).expect("self.x");
+        assert_eq!(on_self.doc.as_deref(), Some("X component"));
+        let on_p = hover_at(src, "t.rg", 10, 13, HashMap::new()).expect("p.x");
+        assert_eq!(on_p.doc.as_deref(), Some("X component"));
+    }
+
+    #[test]
+    fn hover_at_doc_line_shows_following_var() {
+        let src = "fn main(): Int {\n    ## Helper functions for JSON\n    var round = 1;\n    return round;\n}\n";
+        let on_hashes = hover_at(src, "t.rg", 2, 5, HashMap::new()).expect("##");
+        assert_eq!(on_hashes.name, "round");
+        assert_eq!(on_hashes.doc.as_deref(), Some("Helper functions for JSON"));
+        let on_word = hover_at(src, "t.rg", 2, 12, HashMap::new()).expect("Helper");
+        assert_eq!(on_word.doc.as_deref(), Some("Helper functions for JSON"));
+        assert_eq!(on_word.signature, "var round");
     }
 
     #[test]

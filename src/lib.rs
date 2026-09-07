@@ -8,6 +8,7 @@ pub mod interpreter;
 pub mod lexer;
 pub mod navigate;
 pub mod parser;
+pub mod repl;
 pub mod signal;
 pub mod stdlib;
 pub mod typecheck;
@@ -39,21 +40,71 @@ pub struct Span {
     pub col: u32,
 }
 
+impl Span {
+    pub fn is_unknown(self) -> bool {
+        self.line == 0 && self.col == 0
+    }
+}
+
 impl std::fmt::Display for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.line, self.col)
     }
 }
 
+/// One caller on a runtime stack: the function entered, the call site, and that file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceFrame {
+    pub name: String,
+    pub span: Span,
+    pub file: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeError {
     pub message: String,
     pub span: Span,
+    /// Set by `process.exit` — not a crash.
+    pub exit_code: Option<i32>,
+    pub trace: Vec<TraceFrame>,
+    /// Source file of the error site (`helpers.rg`), empty when unknown.
+    pub file: String,
+}
+
+impl RuntimeError {
+    pub fn is_exit(&self) -> Option<i32> {
+        self.exit_code
+    }
+}
+
+fn write_loc(f: &mut std::fmt::Formatter<'_>, file: &str, span: Span) -> std::fmt::Result {
+    if file.is_empty() {
+        write!(f, "{span}")
+    } else {
+        write!(f, "{file}:{span}")
+    }
 }
 
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "runtime error at {}: {}", self.span, self.message)
+        if let Some(code) = self.exit_code {
+            return write!(f, "exited with {code}");
+        }
+        write!(f, "runtime error at ")?;
+        write_loc(f, &self.file, self.span)?;
+        write!(f, ": {}", self.message)?;
+        for frame in &self.trace {
+            write!(f, "\n  from {}", frame.name)?;
+            if frame.span.is_unknown() {
+                if !frame.file.is_empty() {
+                    write!(f, " at {}", frame.file)?;
+                }
+            } else {
+                write!(f, " at ")?;
+                write_loc(f, &frame.file, frame.span)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -255,6 +306,7 @@ pub struct RunResult {
     pub stdout: String,
     pub stderr: String,
     pub message: String,
+    pub exit_code: i32,
 }
 
 impl RunResult {
@@ -265,6 +317,43 @@ impl RunResult {
             stdout: String::new(),
             stderr: message.clone(),
             message,
+            exit_code: 1,
+        }
+    }
+
+    fn from_eval(ctx: &EvalContext, result: Result<Value, RuntimeError>) -> Self {
+        match result {
+            Ok(_) => Self {
+                ok: true,
+                stdout: ctx.stdout.clone(),
+                stderr: String::new(),
+                message: "RoseGold finished".to_string(),
+                exit_code: 0,
+            },
+            Err(e) => {
+                if let Some(code) = e.exit_code {
+                    Self {
+                        ok: code == 0,
+                        stdout: ctx.stdout.clone(),
+                        stderr: String::new(),
+                        message: if code == 0 {
+                            "RoseGold finished".to_string()
+                        } else {
+                            format!("exited with {code}")
+                        },
+                        exit_code: code,
+                    }
+                } else {
+                    let msg = e.to_string();
+                    Self {
+                        ok: false,
+                        stdout: ctx.stdout.clone(),
+                        stderr: msg.clone(),
+                        message: msg,
+                        exit_code: 1,
+                    }
+                }
+            }
         }
     }
 }
@@ -282,27 +371,19 @@ fn run_with_context(source: &str, ctx: &mut EvalContext) -> RunResult {
         Ok(program) => program,
         Err(e) => return RunResult::fail(e),
     };
-    match ctx.run(&program) {
-        Ok(_) => RunResult {
-            ok: true,
-            stdout: ctx.stdout.clone(),
-            stderr: String::new(),
-            message: "RoseGold finished".to_string(),
-        },
-        Err(e) => {
-            let msg = e.to_string();
-            RunResult {
-                ok: false,
-                stdout: ctx.stdout.clone(),
-                stderr: msg.clone(),
-                message: msg,
-            }
-        }
-    }
+    let result = ctx.run(&program);
+    RunResult::from_eval(ctx, result)
 }
 
 pub fn run_source(source: &str) -> RunResult {
     let mut ctx = EvalContext::new();
+    run_with_context(source, &mut ctx)
+}
+
+/// Same as [`run_source`], with `process.argv()` set to `argv`.
+pub fn run_source_with_argv(source: &str, argv: Vec<String>) -> RunResult {
+    let mut ctx = EvalContext::new();
+    ctx.set_argv(argv);
     run_with_context(source, &mut ctx)
 }
 
@@ -313,6 +394,11 @@ pub fn run_source_with_modules(source: &str, modules: HashMap<String, String>) -
 }
 
 pub fn run_file(path: &Path) -> RunResult {
+    run_file_with_argv(path, vec![path.display().to_string()])
+}
+
+/// Run a file with `process.argv()` set (script path should be `argv[0]`).
+pub fn run_file_with_argv(path: &Path, argv: Vec<String>) -> RunResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return RunResult::fail(format!("failed to read file: {}", e)),
@@ -320,6 +406,8 @@ pub fn run_file(path: &Path) -> RunResult {
     let base = path.parent().unwrap_or(Path::new("."));
     let resolver = Rc::new(RefCell::new(FileModuleResolver::new(base)));
     let mut ctx = EvalContext::with_resolver(resolver);
+    ctx.set_argv(argv);
+    ctx.set_source_file(source_label(path));
     run_with_context(&source, &mut ctx)
 }
 
@@ -327,14 +415,14 @@ pub fn run_file(path: &Path) -> RunResult {
 pub fn run_tests(source: &str) -> RunResult {
     let resolver: Rc<RefCell<dyn ModuleResolver>> =
         Rc::new(RefCell::new(HashMapResolver::new(HashMap::new())));
-    run_tests_with_resolver(source, resolver)
+    run_tests_with_resolver(&source, resolver, String::new())
 }
 
 /// Same as `run_tests`, with in-memory `{ "utils": "…" }` modules.
 pub fn run_tests_with_modules(source: &str, modules: HashMap<String, String>) -> RunResult {
     let resolver: Rc<RefCell<dyn ModuleResolver>> =
         Rc::new(RefCell::new(HashMapResolver::new(modules)));
-    run_tests_with_resolver(source, resolver)
+    run_tests_with_resolver(source, resolver, String::new())
 }
 
 /// Run `@test` functions in a file, resolving sibling `.rg` imports from its directory.
@@ -346,10 +434,21 @@ pub fn run_tests_file(path: &Path) -> RunResult {
     let base = path.parent().unwrap_or(Path::new("."));
     let resolver: Rc<RefCell<dyn ModuleResolver>> =
         Rc::new(RefCell::new(FileModuleResolver::new(base)));
-    run_tests_with_resolver(&source, resolver)
+    run_tests_with_resolver(&source, resolver, source_label(path))
 }
 
-fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver>>) -> RunResult {
+fn source_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("script.rg")
+        .to_string()
+}
+
+fn run_tests_with_resolver(
+    source: &str,
+    resolver: Rc<RefCell<dyn ModuleResolver>>,
+    file: String,
+) -> RunResult {
     let mut lexer = Lexer::new(source);
     let tokens = match lexer.tokenize() {
         Ok(tokens) => tokens,
@@ -383,10 +482,12 @@ fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver
             stdout: String::new(),
             stderr: String::new(),
             message: "no @test functions".into(),
+            exit_code: 0,
         };
     }
 
     let mut ctx = EvalContext::with_resolver(resolver);
+    ctx.set_source_file(file);
     if let Err(e) = ctx.load_program(&program) {
         let msg = e.to_string();
         return RunResult {
@@ -394,6 +495,7 @@ fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver
             stdout: ctx.stdout.clone(),
             stderr: msg.clone(),
             message: msg,
+            exit_code: 1,
         };
     }
 
@@ -424,6 +526,7 @@ fn run_tests_with_resolver(source: &str, resolver: Rc<RefCell<dyn ModuleResolver
             summary.clone()
         },
         message: summary,
+        exit_code: if failed == 0 { 0 } else { 1 },
     }
 }
 

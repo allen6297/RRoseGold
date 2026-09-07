@@ -1,10 +1,11 @@
-//! CLI: `check`, `run`, `test`, `fmt`, `hover`, `def`.
+//! CLI: `check`, `run`, `test`, `fmt`, `hover`, `def`, and a REPL.
 
 use std::env;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use rosegold::repl::{self, LineResult, Session};
 use rosegold::{SymbolInfo, check_file, check_source_at, def_at, hover_at, sibling_modules};
 
 fn usage() -> ! {
@@ -13,15 +14,18 @@ fn usage() -> ! {
 RoseGold — scripting language
 
 Usage:
+  rosegold
+  rosegold repl
   rosegold check [--json] [--stdin] <file>
-  rosegold run   [--json] <file>
+  rosegold run   [--json] <file> [args...]
   rosegold test  [--json] <file>
   rosegold fmt   [--write] [--check] [--stdin] <file>
   rosegold hover [--json] [--stdin] <file> <line> <col>
   rosegold def   [--json] [--stdin] <file> <line> <col>
 
+  (no command / repl)  interactive prompt
   check  parse and typecheck (no eval)
-  run    compile and run (calls main if present)
+  run    compile and run (calls main if present); extra args are process.argv()
   test   run @test functions
   fmt    pretty-print (stdout; --write in place; --check exit 1 if dirty)
   hover  symbol signature at 1-based line:col
@@ -42,19 +46,23 @@ struct Args {
     path: PathBuf,
     line: Option<u32>,
     col: Option<u32>,
+    script_argv: Vec<String>,
 }
 
-fn parse_args(mut argv: impl Iterator<Item = String>) -> Args {
-    let cmd = argv.next().unwrap_or_else(|| usage());
-    if matches!(cmd.as_str(), "-h" | "--help" | "help") {
-        usage();
-    }
+fn parse_args(mut argv: impl Iterator<Item = String>) -> Option<Args> {
+    let cmd = match argv.next() {
+        None => return None,
+        Some(c) if matches!(c.as_str(), "-h" | "--help" | "help") => usage(),
+        Some(c) if c == "repl" => return None,
+        Some(c) => c,
+    };
     let mut json = false;
     let mut stdin = false;
     let mut write = false;
     let mut check = false;
     let mut path: Option<PathBuf> = None;
     let mut nums: Vec<u32> = Vec::new();
+    let mut script_argv = Vec::new();
     for a in argv {
         if a == "--json" {
             json = true;
@@ -64,11 +72,13 @@ fn parse_args(mut argv: impl Iterator<Item = String>) -> Args {
             write = true;
         } else if a == "--check" {
             check = true;
-        } else if a.starts_with('-') {
+        } else if a.starts_with('-') && path.is_none() {
             eprintln!("unknown flag: {a}");
             usage();
         } else if path.is_none() {
             path = Some(PathBuf::from(a));
+        } else if cmd == "run" {
+            script_argv.push(a);
         } else if let Ok(n) = a.parse::<u32>() {
             nums.push(n);
         } else {
@@ -79,7 +89,7 @@ fn parse_args(mut argv: impl Iterator<Item = String>) -> Args {
     let path = path.unwrap_or_else(|| usage());
     let line = nums.first().copied();
     let col = nums.get(1).copied();
-    Args {
+    Some(Args {
         cmd,
         json,
         stdin,
@@ -88,7 +98,8 @@ fn parse_args(mut argv: impl Iterator<Item = String>) -> Args {
         path,
         line,
         col,
-    }
+        script_argv,
+    })
 }
 
 fn read_source(path: &Path, stdin: bool) -> Result<String, String> {
@@ -134,14 +145,17 @@ fn cmd_check(path: &Path, json: bool, stdin: bool) -> i32 {
     emit_diagnostics(&diags, json)
 }
 
-fn cmd_run(path: &Path, json: bool) -> i32 {
-    let result = rosegold::run_file(path);
+fn cmd_run(path: &Path, json: bool, script_argv: Vec<String>) -> i32 {
+    let mut argv = vec![path.display().to_string()];
+    argv.extend(script_argv);
+    let result = rosegold::run_file_with_argv(path, argv);
     if json {
         let payload = serde_json::json!({
           "ok": result.ok,
           "stdout": result.stdout,
           "stderr": result.stderr,
           "message": result.message,
+          "exitCode": result.exit_code,
         });
         println!("{payload}");
     } else {
@@ -151,12 +165,11 @@ fn cmd_run(path: &Path, json: bool) -> i32 {
             if !result.stderr.ends_with('\n') {
                 eprintln!();
             }
-        }
-        if !result.ok && result.stderr.is_empty() {
+        } else if !result.ok && !result.message.starts_with("exited ") {
             eprintln!("{}", result.message);
         }
     }
-    if result.ok { 0 } else { 1 }
+    result.exit_code
 }
 
 fn cmd_test(path: &Path, json: bool) -> i32 {
@@ -354,17 +367,94 @@ fn cmd_fmt(path: &Path, stdin: bool, write: bool, check: bool) -> i32 {
     0
 }
 
+fn cmd_repl() -> i32 {
+    println!("RoseGold {}", env!("CARGO_PKG_VERSION"));
+    println!("Type :help for commands, :quit to exit.");
+    let mut session = repl::Session::with_cwd();
+    let mut buffer = String::new();
+    let stdin = io::stdin();
+    loop {
+        let prompt = if buffer.is_empty() { "> " } else { "... " };
+        print!("{prompt}");
+        if io::stdout().flush().is_err() {
+            return 1;
+        }
+        let mut line = String::new();
+        match stdin.read_line(&mut line) {
+            Ok(0) => {
+                println!();
+                return 0;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        }
+        if buffer.is_empty() {
+            match line.trim() {
+                "" => continue,
+                ":quit" | ":q" | ":exit" => return 0,
+                ":help" | ":h" => {
+                    eprintln!(
+                        "\
+:help   this text
+:quit   leave the REPL
+Expressions print their value. Statements and declarations persist.
+Each line is typechecked. import looks in the current directory.
+import process;  process.argv()  process.env(\"PATH\")  process.exit(0)
+import json;     json.parse(text)  json.stringify(value)"
+                    );
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        buffer.push_str(&line);
+        if !repl::is_complete(&buffer) {
+            continue;
+        }
+        let src = std::mem::take(&mut buffer);
+        match repl::eval_line(&mut session, &src) {
+            LineResult::Empty | LineResult::Silent => {
+                flush_repl_stdout(&mut session);
+            }
+            LineResult::Value(v) => {
+                flush_repl_stdout(&mut session);
+                println!("{}", repl::format_value(&v));
+            }
+            LineResult::Error(e) => {
+                flush_repl_stdout(&mut session);
+                eprintln!("{e}");
+            }
+            LineResult::Exit(code) => {
+                flush_repl_stdout(&mut session);
+                return code;
+            }
+        }
+    }
+}
+
+fn flush_repl_stdout(session: &mut Session) {
+    let out = std::mem::take(&mut session.ctx.stdout);
+    if !out.is_empty() {
+        print!("{out}");
+    }
+}
+
 fn main() -> ExitCode {
     let mut argv = env::args();
     let _bin = argv.next();
-    let args = parse_args(argv);
+    let Some(args) = parse_args(argv) else {
+        return ExitCode::from(cmd_repl() as u8);
+    };
     if !args.stdin && !args.path.exists() {
         eprintln!("file not found: {}", args.path.display());
         return ExitCode::from(2);
     }
     let code = match args.cmd.as_str() {
         "check" => cmd_check(&args.path, args.json, args.stdin),
-        "run" => cmd_run(&args.path, args.json),
+        "run" => cmd_run(&args.path, args.json, args.script_argv),
         "test" => cmd_test(&args.path, args.json),
         "fmt" => cmd_fmt(&args.path, args.stdin, args.write, args.check),
         "hover" | "def" => {

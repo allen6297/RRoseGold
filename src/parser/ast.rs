@@ -35,6 +35,7 @@ pub struct FieldDecl {
     pub name: String,
     pub ty: Type,
     pub leading: Vec<String>,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +148,38 @@ pub struct FnDecl {
     pub doc: Option<String>,
     pub leading: Vec<String>,
     pub is_pub: bool,
+    /// Source file label (`helpers.rg`), empty when unknown.
+    pub file: String,
+    /// Import path (`util.helpers`) when this fn was loaded from a module.
+    pub module: String,
+}
+
+impl FnDecl {
+    pub fn with_origin(mut self, file: &str, module: &str) -> Self {
+        if self.file.is_empty() {
+            self.file = file.to_string();
+        }
+        if self.module.is_empty() {
+            self.module = module.to_string();
+        }
+        self
+    }
+
+    pub fn trace_name(&self) -> String {
+        if self.module.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}.{}", self.module, self.name)
+        }
+    }
+
+    pub fn method_trace_name(&self, type_name: &str) -> String {
+        if self.module.is_empty() {
+            format!("{type_name}.{}", self.name)
+        } else {
+            format!("{}.{}.{}", self.module, type_name, self.name)
+        }
+    }
 }
 
 /// Parameters after an explicit `self`. Class / trait methods may omit `self`;

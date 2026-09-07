@@ -78,10 +78,21 @@ impl Parser {
         }
     }
 
-    fn skip_docs(&mut self) {
-        while matches!(self.peek(), TokenKind::DocComment(_)) {
+    fn take_docs(&mut self) -> Option<String> {
+        let mut doc_lines = Vec::new();
+        while let TokenKind::DocComment(text) = self.peek() {
+            doc_lines.push(text.clone());
             self.advance();
         }
+        if doc_lines.is_empty() {
+            None
+        } else {
+            Some(doc_lines.join("\n"))
+        }
+    }
+
+    fn skip_docs(&mut self) {
+        let _ = self.take_docs();
     }
 
     fn take_line_comments(&mut self) -> Vec<String> {
@@ -369,7 +380,7 @@ impl Parser {
         let mut fields = Vec::new();
         loop {
             let leading = self.take_line_comments();
-            self.skip_docs();
+            let doc = self.take_docs();
             if self.at(TokenKind::RBrace) || self.at(TokenKind::Eof) {
                 self.expect(TokenKind::RBrace, "expected '}' after struct fields")?;
                 return Ok(StructDecl {
@@ -387,6 +398,7 @@ impl Parser {
                 name: field_name,
                 ty,
                 leading,
+                doc,
             });
             if !self.consume(TokenKind::Comma) {
                 let trailing = self.take_line_comments();
@@ -505,9 +517,7 @@ impl Parser {
             };
             match self.peek() {
                 TokenKind::Var => {
-                    let mut decl = self.parse_var_decl()?;
-                    decl.doc = doc;
-                    decl.leading = leading.clone();
+                    let decl = self.parse_var_decl()?;
                     if let Some(value) = &decl.value {
                         defaults.push((decl.name.clone(), value.clone()));
                     }
@@ -515,6 +525,7 @@ impl Parser {
                         name: decl.name,
                         ty: decl.ty,
                         leading,
+                        doc,
                     });
                 }
                 TokenKind::Fn => {
@@ -799,6 +810,8 @@ impl Parser {
             doc: None,
             leading: Vec::new(),
             is_pub: false,
+            file: String::new(),
+            module: String::new(),
         })
     }
 
@@ -938,18 +951,23 @@ impl Parser {
             self.advance();
             return Ok(Self::stmt(StmtKind::Comment(text), span));
         }
-        self.skip_docs();
+        let doc = self.take_docs();
         let span = self.span();
         match self.peek() {
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for(),
             TokenKind::Return => self.parse_return(),
-            TokenKind::Var => Ok(Self::stmt(StmtKind::VarDecl(self.parse_var_decl()?), span)),
-            TokenKind::Const => Ok(Self::stmt(
-                StmtKind::ConstDecl(self.parse_const_decl()?),
-                span,
-            )),
+            TokenKind::Var => {
+                let mut decl = self.parse_var_decl()?;
+                decl.doc = doc;
+                Ok(Self::stmt(StmtKind::VarDecl(decl), span))
+            }
+            TokenKind::Const => {
+                let mut decl = self.parse_const_decl()?;
+                decl.doc = doc;
+                Ok(Self::stmt(StmtKind::ConstDecl(decl), span))
+            }
             TokenKind::Break => {
                 self.advance();
                 self.expect(TokenKind::Semicolon, "expected ';' after break")?;

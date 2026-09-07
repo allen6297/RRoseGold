@@ -64,7 +64,7 @@ test("died. offers emit", () => {
   const pos = SRC.indexOf("return 0.0");
   const hit = scan.membersFor(file, [file], pos, "died");
   assert.equal(hit.kind, "list");
-  assert.deepEqual(hit.items.map((i) => i.name), ["emit"]);
+  assert.deepEqual(hit.items.map((i) => i.name), ["emit", "connect"]);
 });
 
 test("extends offers local classes", () => {

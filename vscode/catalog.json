@@ -540,6 +540,80 @@
         "params": []
     },
     {
+        "key": "process",
+        "label": "process",
+        "detail": "host",
+        "signature": "import process",
+        "doc": "Script arguments, environment variables, and exit. Requires `import process;`. `process.argv()[0]` is the script path.",
+        "kind": "module"
+    },
+    {
+        "key": "process.argv",
+        "label": "argv",
+        "detail": "()",
+        "signature": "process.argv(): Array",
+        "doc": "Command-line arguments. Index 0 is the script path (`<repl>` in the REPL); the rest are args after `rosegold run <file>`.",
+        "kind": "function",
+        "template": "argv()",
+        "params": []
+    },
+    {
+        "key": "process.env",
+        "label": "env",
+        "detail": "(name)",
+        "signature": "process.env(name: String): Option",
+        "doc": "Look up an environment variable. Missing names return Option.None.",
+        "kind": "function",
+        "template": "env(${name})",
+        "params": [
+            "name"
+        ]
+    },
+    {
+        "key": "process.exit",
+        "label": "exit",
+        "detail": "(code)",
+        "signature": "process.exit(code: Int): Void",
+        "doc": "Stop the script with this process exit code.",
+        "kind": "function",
+        "template": "exit(${code})",
+        "params": [
+            "code"
+        ]
+    },
+    {
+        "key": "json",
+        "label": "json",
+        "detail": "host",
+        "signature": "import json",
+        "doc": "Parse and stringify JSON. Requires `import json;`. Objects become Map, arrays become Array, `null` becomes `none`.",
+        "kind": "module"
+    },
+    {
+        "key": "json.parse",
+        "label": "parse",
+        "detail": "(text)",
+        "signature": "json.parse(text: String): Result",
+        "doc": "Parse JSON text. Returns Result.Ok(value) or Result.Err with a message.",
+        "kind": "function",
+        "template": "parse(${text})",
+        "params": [
+            "text"
+        ]
+    },
+    {
+        "key": "json.stringify",
+        "label": "stringify",
+        "detail": "(value)",
+        "signature": "json.stringify(value): Result",
+        "doc": "Encode a value as compact JSON. Maps and class instances become objects. Option.None / none become null. Functions and Result.Err cannot be encoded.",
+        "kind": "function",
+        "template": "stringify(${value})",
+        "params": [
+            "value"
+        ]
+    },
+    {
         "key": "checks",
         "label": "checks",
         "detail": "stdlib",

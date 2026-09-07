@@ -74,8 +74,9 @@ const KIND = {
  */
 function findRustCli(startDir) {
   if (!startDir) {
-    return null;
+    return [];
   }
+  const found = [];
   let dir = startDir;
   for (let i = 0; i < 12; i++) {
     const candidates = [
@@ -89,9 +90,7 @@ function findRustCli(startDir) {
       );
     }
     for (const cand of candidates) {
-      if (fs.existsSync(cand)) {
-        return cand;
-      }
+      if (fs.existsSync(cand)) found.push(cand);
     }
     const parent = path.dirname(dir);
     if (parent === dir) {
@@ -99,7 +98,14 @@ function findRustCli(startDir) {
     }
     dir = parent;
   }
-  return null;
+  return found;
+}
+
+function newestCli(paths) {
+  if (!paths.length) return null;
+  return paths
+    .slice()
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 }
 
 /**
@@ -113,12 +119,20 @@ function cliInvocation(hintPath) {
     const parts = raw.split(/\s+/).filter(Boolean);
     return { cmd: parts[0], prefix: parts.slice(1) };
   }
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const fromHint =
-    hintPath && path.isAbsolute(hintPath) ? path.dirname(hintPath) : undefined;
-  const found = findRustCli(folder) || findRustCli(fromHint);
-  if (found) {
-    return { cmd: found, prefix: [] };
+  const dirs = [];
+  for (const folder of vscode.workspace.workspaceFolders || []) {
+    dirs.push(folder.uri.fsPath);
+  }
+  if (hintPath && path.isAbsolute(hintPath)) {
+    dirs.push(path.dirname(hintPath));
+  }
+  const found = [];
+  for (const dir of dirs) {
+    found.push(...findRustCli(dir));
+  }
+  const hit = newestCli(found);
+  if (hit) {
+    return { cmd: hit, prefix: [] };
   }
   return { cmd: "rosegold", prefix: [] };
 }
@@ -381,6 +395,20 @@ function emitAfterDot() {
   return item;
 }
 
+function connectAfterDot() {
+  const item = new vscode.CompletionItem(
+    "connect",
+    vscode.CompletionItemKind.Function
+  );
+  item.detail = "signal";
+  item.documentation = new vscode.MarkdownString(
+    "```rosegold\nsignal.connect(fn)\n```\n\nSubscribe a free function. Emit calls listeners in connect order.",
+    true
+  );
+  item.insertText = new vscode.SnippetString("connect(${1:handler})");
+  return item;
+}
+
 function scanOpenFiles(document) {
   const seen = new Set();
   const files = [];
@@ -404,6 +432,7 @@ function afterDotCompletions(mod, document, position) {
   if (hit.kind === "list") {
     return hit.items.map((item) => {
       if (item.role === "emit") return emitAfterDot();
+      if (item.role === "connect") return connectAfterDot();
       const kind =
         item.role === "field"
           ? vscode.CompletionItemKind.Field
@@ -666,6 +695,15 @@ function quote(p) {
   return JSON.stringify(p);
 }
 
+/** CLI line for the integrated terminal. Quoted paths need `&` in PowerShell. */
+function cliLine(cmd, prefix, subcmd, file) {
+  const rest = [...prefix, subcmd, quote(file)];
+  if (process.platform === "win32") {
+    return ["&", quote(cmd), ...rest].join(" ");
+  }
+  return [quote(cmd), ...rest].join(" ");
+}
+
 /** @param {string} source */
 function scanTests(source) {
   const items = [];
@@ -838,10 +876,13 @@ function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerHoverProvider("rosegold", {
       async provideHover(document, position) {
+        const lineText = document.lineAt(position.line).text;
+        const onDoc = /^\s*##/.test(lineText);
         const tok = identAt(document, position);
-        const entry = catalogHit(tok);
-        if (entry) return hoverFromEntry(entry, tok.range);
-        if (!tok) return null;
+        if (!onDoc) {
+          const entry = catalogHit(tok);
+          if (entry) return hoverFromEntry(entry, tok.range);
+        }
         const filePath = filePathOf(document);
         const payload = await parseJson(
           [
@@ -857,9 +898,14 @@ function activate(context) {
         );
         const info = payload?.hover;
         if (!info || !info.contents) return null;
+        const range = tok
+          ? tok.range
+          : info.range
+            ? rangeFrom(info.range)
+            : undefined;
         return new vscode.Hover(
           new vscode.MarkdownString(info.contents, true),
-          tok.range
+          range
         );
       },
     })
@@ -945,7 +991,7 @@ function activate(context) {
       await editor.document.save();
       const file = editor.document.uri.fsPath;
       const { cmd, prefix } = cliInvocation(file);
-      sendToTerminal([quote(cmd), ...prefix, "run", quote(file)].join(" "));
+      sendToTerminal(cliLine(cmd, prefix, "run", file));
     })
   );
 
@@ -959,7 +1005,7 @@ function activate(context) {
       await editor.document.save();
       const file = editor.document.uri.fsPath;
       const { cmd, prefix } = cliInvocation(file);
-      sendToTerminal([quote(cmd), ...prefix, "test", quote(file)].join(" "));
+      sendToTerminal(cliLine(cmd, prefix, "test", file));
     })
   );
 
@@ -975,10 +1021,9 @@ function activate(context) {
         ? fs.readdirSync(target).filter((f) => f.endsWith(".rg")).map((f) => path.join(target, f))
         : [target];
       const { cmd, prefix } = cliInvocation(target);
-      const cmds = files
-        .map((f) => [quote(cmd), ...prefix, "test", quote(f)].join(" "))
-        .join(" && ");
-      sendToTerminal(cmds || [quote(cmd), ...prefix, "test", quote(target)].join(" "));
+      const joiner = process.platform === "win32" ? "; " : " && ";
+      const cmds = files.map((f) => cliLine(cmd, prefix, "test", f)).join(joiner);
+      sendToTerminal(cmds || cliLine(cmd, prefix, "test", target));
     })
   );
 

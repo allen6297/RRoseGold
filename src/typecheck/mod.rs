@@ -3,5 +3,8 @@
 mod checker;
 mod helpers;
 
-pub use checker::{typecheck, typecheck_diagnostics, typecheck_diagnostics_with};
+pub use checker::{
+    typecheck, typecheck_diagnostics, typecheck_diagnostics_with, typecheck_expr_diagnostics,
+    typecheck_expr_diagnostics_with,
+};
 pub use helpers::{is_stdlib_module, stdlib_arity};

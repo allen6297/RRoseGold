@@ -15,18 +15,28 @@ cargo test
 rosegold check examples/hello.rg
 rosegold run examples/hello.rg
 rosegold run examples/class_trait.rg
+rosegold run examples/process.rg hello
+rosegold run examples/tour.rg
+rosegold run examples/json.rg
+rosegold run examples/signals.rg
+rosegold test examples/tests.rg
+rosegold
 ```
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `src/` | Language crate and CLI (`check`, `run`, `test`, `fmt`, `hover`, `def`) |
+| `src/` | Language crate and CLI (`check`, `run`, `test`, `fmt`, `hover`, `def`, REPL) |
 | `stdlib/` | Embedded `.rg` modules (`math`, `option`, `result`, `str`, `vec`, `checks`) |
 | `examples/` | Sample scripts |
 | `vscode/` | Language support for VS Code / Cursor |
 
-Host modules `io` and `time` are native. Everything else in stdlib is `.rg`.
+Host modules `io`, `time`, `process`, and `json` are native. Everything else in stdlib is `.rg`.
+
+`rosegold` with no command starts a REPL (each line is typechecked; `import` uses the current directory). `rosegold run file.rg args…` puts the script path and extra args in `process.argv()`. Runtime errors list the call stack with file names.
+
+Language walkthrough: [docs/tour.md](docs/tour.md) and [`examples/tour.rg`](examples/tour.rg).
 
 ## Editor
 

@@ -38,6 +38,29 @@ fn hash_comment_does_not_attach() {
 }
 
 #[test]
+fn docs_attach_to_local_var() {
+    let items = parse("fn main(): Int {\n    ## local counter\n    var n: Int = 1;\n    return n;\n}\n");
+    let Item::FnDecl(f) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    let StmtKind::VarDecl(v) = &f.body.stmts[0].kind else {
+        panic!("{:?}", f.body.stmts[0].kind)
+    };
+    assert_eq!(v.name, "n");
+    assert_eq!(v.doc.as_deref(), Some("local counter"));
+}
+
+#[test]
+fn docs_attach_to_class_field() {
+    let items = parse("class Point {\n    ## X component\n    var x: Float = 0.0;\n}\n");
+    let Item::ClassDecl(c) = &items[0] else {
+        panic!("{:?}", items[0])
+    };
+    assert_eq!(c.fields[0].name, "x");
+    assert_eq!(c.fields[0].doc.as_deref(), Some("X component"));
+}
+
+#[test]
 fn docs_inside_body_do_not_fail_parse() {
     let items = parse("fn foo(): Int {\n    ## ignored\n    return 0;\n}\n");
     assert!(matches!(&items[0], Item::FnDecl(_)));

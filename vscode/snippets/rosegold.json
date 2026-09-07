@@ -46,6 +46,13 @@
     ],
     "description": "Fire a signal"
   },
+  "Connect": {
+    "prefix": "connect",
+    "body": [
+      "${1:name}.connect(${2:handler});"
+    ],
+    "description": "Subscribe a function to a signal"
+  },
   "Signal": {
     "prefix": "signal",
     "body": [
@@ -250,5 +257,19 @@
       "from result import Result;"
     ],
     "description": "Import crate Result"
+  },
+  "Import process": {
+    "prefix": "importprocess",
+    "body": [
+      "import process;"
+    ],
+    "description": "Import process (argv, env, exit)"
+  },
+  "Import json": {
+    "prefix": "importjson",
+    "body": [
+      "import json;"
+    ],
+    "description": "Import json (parse, stringify)"
   }
 }

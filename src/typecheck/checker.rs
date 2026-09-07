@@ -743,7 +743,13 @@ impl<'a> TypeChecker<'a> {
         let parts = resolver.resolve_all(name);
         if parts.is_empty() {
             if self.strict_imports {
-                self.error(span, format!("module '{name}' not found"));
+                self.error(
+                    span,
+                    format!(
+                        "module '{name}' not found (tried {})",
+                        crate::interpreter::module_lookup_hint(name)
+                    ),
+                );
             }
             self.user_modules.insert(name.to_string(), HashMap::new());
             return;
@@ -1120,7 +1126,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::Member { object, name } => {
-                if *name == "emit" && matches!(&object.kind, ExprKind::Ident(_)) {
+                if matches!(name.as_str(), "emit" | "connect")
+                    && matches!(&object.kind, ExprKind::Ident(_))
+                {
                     // check_call reports unknown signals; don't also flag the name as undefined
                 } else {
                     self.walk_expr(object);
@@ -1210,23 +1218,9 @@ impl<'a> TypeChecker<'a> {
                 self.error(callee.span, format!("undefined function '{}'", name));
             }
             ExprKind::Member { object, name } => {
-                if name == "emit" {
+                if matches!(name.as_str(), "emit" | "connect") {
                     if let ExprKind::Ident(sig) = &object.kind {
-                        match self.signals.get(sig) {
-                            Some(expected) => {
-                                if arg_count != *expected {
-                                    self.error(
-                                        callee.span,
-                                        format!(
-                                            "{sig}.emit expected {expected} args, got {arg_count}"
-                                        ),
-                                    );
-                                }
-                            }
-                            None => {
-                                self.error(callee.span, format!("unknown signal '{sig}'"));
-                            }
-                        }
+                        self.check_signal_call(callee.span, sig, name, args);
                         return;
                     }
                 }
@@ -1281,6 +1275,56 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn check_signal_call(&mut self, span: Span, sig: &str, method: &str, args: &[Expr]) {
+        let Some(&arity) = self.signals.get(sig) else {
+            self.error(span, format!("unknown signal '{sig}'"));
+            return;
+        };
+        if method == "emit" {
+            if args.len() != arity {
+                self.error(
+                    span,
+                    format!("{sig}.emit expected {arity} args, got {}", args.len()),
+                );
+            }
+            return;
+        }
+        if method == "connect" {
+            if args.len() != 1 {
+                self.error(
+                    span,
+                    format!("{sig}.connect expected 1 arg, got {}", args.len()),
+                );
+                return;
+            }
+            let Some(ExprKind::Ident(listener)) = args.first().map(|a| &a.kind) else {
+                self.error(span, format!("{sig}.connect expects a function name"));
+                return;
+            };
+            let Some(fn_sig) = self.functions.get(listener).cloned() else {
+                self.error(span, format!("undefined function '{listener}'"));
+                return;
+            };
+            if fn_sig.takes_self {
+                self.error(
+                    span,
+                    format!("{sig}.connect expects a free function, got method '{listener}'"),
+                );
+                return;
+            }
+            if let Some(got) = fn_sig.call_arity() {
+                if got != arity {
+                    self.error(
+                        span,
+                        format!(
+                            "{listener} expected {arity} args to connect to '{sig}', got {got}"
+                        ),
+                    );
+                }
+            }
         }
     }
 
@@ -1460,7 +1504,7 @@ impl<'a> TypeChecker<'a> {
 }
 
 /// All typecheck findings (may be empty). Spans are filled; `file` is left blank.
-/// Uses the crate-embedded stdlib; user imports are lenient (Play `compile_source`).
+/// Uses the crate-embedded stdlib; user imports are lenient without a resolver.
 pub fn typecheck_diagnostics(program: &[Item]) -> Vec<Diagnostic> {
     typecheck_diagnostics_with(program, None)
 }
@@ -1477,6 +1521,28 @@ pub fn typecheck_diagnostics_with(
     };
     let mut checker = TypeChecker::new(Some(resolver), strict);
     checker.check_program(program);
+    checker.diagnostics
+}
+
+/// Typecheck `expr` after registering `prelude` (REPL lines, prior bindings).
+pub fn typecheck_expr_diagnostics(prelude: &[Item], expr: &Expr) -> Vec<Diagnostic> {
+    typecheck_expr_diagnostics_with(prelude, expr, None)
+}
+
+pub fn typecheck_expr_diagnostics_with(
+    prelude: &[Item],
+    expr: &Expr,
+    resolver: Option<&dyn ModuleResolver>,
+) -> Vec<Diagnostic> {
+    let fallback = crate::interpreter::HashMapResolver::new(HashMap::new());
+    let strict = resolver.is_some();
+    let resolver: &dyn ModuleResolver = match resolver {
+        Some(r) => r,
+        None => &fallback,
+    };
+    let mut checker = TypeChecker::new(Some(resolver), strict);
+    checker.check_program(prelude);
+    checker.walk_expr(expr);
     checker.diagnostics
 }
 

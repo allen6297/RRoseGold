@@ -28,6 +28,10 @@ pub(super) fn host_return_type(module: &str, name: &str) -> Option<&'static str>
         ) => "Result",
         ("io", "exists" | "is_dir") => "Bool",
         ("time", "now" | "elapsed") => "Float",
+        ("process", "argv") => "Array",
+        ("process", "env") => "Option",
+        ("process", "exit") => "Void",
+        ("json", "parse" | "stringify") => "Result",
         _ => return None,
     })
 }
@@ -50,6 +54,9 @@ pub fn stdlib_arity(module: &str, name: &str) -> Option<usize> {
         ) => 1,
         ("io", "write_text" | "append_text") => 2,
         ("time", "now" | "elapsed") => 0,
+        ("process", "argv") => 0,
+        ("process", "env" | "exit") => 1,
+        ("json", "parse" | "stringify") => 1,
         ("__math", "sin" | "cos" | "sqrt" | "to_int" | "to_float") => 1,
         ("__math", "pow" | "atan2") => 2,
         ("__str", "contains" | "starts_with" | "ends_with" | "repeat" | "split") => 2,

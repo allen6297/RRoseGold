@@ -47,15 +47,13 @@ fn check_io_time_rg_is_clean() {
     assert!(diags.is_empty(), "{diags:?}");
 }
 
-
-
-
-
-
-
-
-
-
+#[test]
+fn check_tour_and_json_rg_are_clean() {
+    for name in ["tour.rg", "json.rg", "tests.rg", "signals.rg", "process.rg"] {
+        let diags = check_file(&example(name));
+        assert!(diags.is_empty(), "{name}: {diags:?}");
+    }
+}
 
 #[test]
 fn str_alias_is_string() {
@@ -91,8 +89,6 @@ fn bump(): Int {
     assert_eq!(ctx.call("bump", vec![]).unwrap(), Value::Int(1));
     assert_eq!(ctx.call("bump", vec![]).unwrap(), Value::Int(2));
 }
-
-
 
 #[test]
 fn arithmetic_and_loops() {
@@ -1562,10 +1558,6 @@ fn main(): Int {
     assert!(out.contains("vec3"), "{out}");
 }
 
-
-
-
-
 #[test]
 fn math_module_requires_import() {
     let diags = check_source(
@@ -1579,22 +1571,6 @@ fn math_module_requires_import() {
         "{diags:?}"
     );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[test]
 fn class_header_impl_missing_method_is_type_error() {
@@ -1918,8 +1894,6 @@ fn main(): Int {
     assert!(out.contains("15"), "{out}");
 }
 
-
-
 #[test]
 fn bitwise_ops_on_int() {
     let out = assert_ok(
@@ -2158,26 +2132,6 @@ fn check_source_with_modules_catches_import_arity() {
     );
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[test]
 fn list_signals_and_emit() {
     let src = r#"
@@ -2196,6 +2150,95 @@ fn main(): Int {
 
     let result = run_source(src);
     assert!(result.ok, "{}\nstderr: {}", result.message, result.stderr);
+}
+
+#[test]
+fn signal_connect_runs_listeners_in_order() {
+    let out = assert_ok(
+        r#"
+signal collected(amount: Int);
+fn log_coin(amount: Int) {
+    print(f"log {amount}");
+}
+fn total_coin(amount: Int) {
+    print(f"total {amount}");
+}
+fn main(): Int {
+    collected.connect(log_coin);
+    collected.connect(total_coin);
+    collected.connect(log_coin);
+    collected.emit(5);
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out, "log 5\ntotal 5\n");
+}
+
+#[test]
+fn signal_listener_error_stops_later_listeners() {
+    let result = run_source(
+        r#"
+signal ping();
+fn boom() {
+    assert(false);
+}
+fn later() {
+    print("later");
+}
+fn main(): Int {
+    ping.connect(boom);
+    ping.connect(later);
+    ping.emit();
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(!result.stdout.contains("later"), "{}", result.stdout);
+}
+
+#[test]
+fn typecheck_signal_connect_arity_and_unknown() {
+    let diags = check_source(
+        r#"
+signal collected(amount: Int);
+fn wrong() {}
+fn ok(amount: Int) {}
+fn main(): Int {
+    collected.connect();
+    collected.connect(wrong);
+    nope.connect(ok);
+    collected.connect(1);
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags.iter().any(
+            |d| d.message.contains("collected.connect") && d.message.contains("expected 1 arg")
+        ),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("wrong") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown signal") && d.message.contains("nope")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("expects a function name")),
+        "{diags:?}"
+    );
 }
 
 #[test]
@@ -2363,14 +2406,6 @@ fn unknown_signal_emit_is_runtime_error() {
     assert!(err.message.contains("unknown signal"), "{}", err.message);
 }
 
-
-
-
-
-
-
-
-
 #[test]
 fn typecheck_io_arity_and_unknown() {
     let diags = check_source(
@@ -2424,8 +2459,6 @@ fn main(): Int {
         "{diags:?}"
     );
 }
-
-
 
 #[test]
 fn diagnostic_from_parser_message() {
@@ -2944,4 +2977,391 @@ fn after() {
     let explode = fields.iter().find(|f| f.name == "explode").unwrap();
     assert_eq!(explode.params.len(), 1);
     assert_eq!(explode.params[0].name, "power");
+}
+
+#[test]
+fn run_examples_ok() {
+    for name in [
+        "hello.rg",
+        "class_trait.rg",
+        "io_time.rg",
+        "process.rg",
+        "tour.rg",
+        "json.rg",
+        "signals.rg",
+    ] {
+        let result = run_file(&example(name));
+        assert!(result.ok, "{name}: {}", result.stderr);
+        assert_eq!(result.exit_code, 0, "{name}");
+    }
+}
+
+#[test]
+fn process_argv_and_env() {
+    let result = run_source_with_argv(
+        r#"
+import process;
+fn main(): Int {
+    var args = process.argv();
+    print(args.len());
+    print(args[0]);
+    print(args[1]);
+    return 0;
+}
+"#,
+        vec!["script.rg".into(), "hello".into()],
+    );
+    assert!(result.ok, "{}", result.stderr);
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert_eq!(lines[0], "2", "{}", result.stdout);
+    assert_eq!(lines[1], "script.rg");
+    assert_eq!(lines[2], "hello");
+}
+
+#[test]
+fn process_env_missing_is_none() {
+    let out = assert_ok(
+        r#"
+import process;
+fn main(): Int {
+    match process.env("ROSEGOLD_NO_SUCH_ENV_VAR_XYZ") {
+        Some(_) { print("hit"); }
+        None { print("none"); }
+    }
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "none");
+}
+
+#[test]
+fn process_env_path_is_some() {
+    let out = assert_ok(
+        r#"
+import process;
+fn main(): Int {
+    match process.env("PATH") {
+        Some(_) { print("path"); }
+        None { print("no-path"); }
+    }
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "path");
+}
+
+#[test]
+fn process_exit_stops_and_sets_code() {
+    let result = run_source(
+        r#"
+import process;
+fn main(): Int {
+    print("bye");
+    process.exit(7);
+    print("nope");
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert_eq!(result.exit_code, 7);
+    assert_eq!(result.stdout, "bye\n");
+    assert!(result.stderr.is_empty(), "{}", result.stderr);
+}
+
+#[test]
+fn process_requires_import() {
+    let diags = check_source("fn main(): Int { process.exit(0); return 0; }\n", "t.rg");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("process") || d.message.contains("undefined")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn typecheck_process_arity() {
+    let diags = check_source(
+        r#"
+import process;
+fn main(): Int {
+    process.argv(1);
+    process.env();
+    process.exit();
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("process.argv") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("process.env") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("process.exit") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn repl_import_and_call() {
+    let mut session = crate::repl::Session::new();
+    match crate::repl::eval_line(&mut session, "import math;") {
+        crate::repl::LineResult::Silent => {}
+        other => panic!("{other:?}"),
+    }
+    match crate::repl::eval_line(&mut session, "math.sqrt(4.0)") {
+        crate::repl::LineResult::Value(Value::Float(n)) => {
+            assert!((n - 2.0).abs() < 1e-9, "{n}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn json_parse_stringify_roundtrip() {
+    let out = assert_ok(
+        r#"
+import json;
+fn main(): Int {
+    var t = json.stringify({"n": 1, "ok": true, "xs": [1, 2]}).unwrap();
+    var d = json.parse(t).unwrap();
+    print(d["n"]);
+    print(d["ok"]);
+    print(len(d["xs"]));
+    print(json.parse("[1,2,3]").unwrap());
+    print(json.parse("not json").is_err());
+    print(json.stringify(none).unwrap());
+    return 0;
+}
+"#,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "1", "{out}");
+    assert_eq!(lines[1], "true");
+    assert_eq!(lines[2], "2");
+    assert_eq!(lines[3], "[1, 2, 3]");
+    assert_eq!(lines[4], "true");
+    assert_eq!(lines[5], "null");
+}
+
+#[test]
+fn json_option_none_is_null() {
+    let out = assert_ok(
+        r#"
+import json;
+fn main(): Int {
+    print(json.stringify(Option.None).unwrap());
+    print(json.stringify(Option.Some(4)).unwrap());
+    print(json.parse("null").unwrap());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out, "null\n4\nnone\n");
+}
+
+#[test]
+fn typecheck_json_arity() {
+    let diags = check_source(
+        r#"
+import json;
+fn main(): Int {
+    json.parse();
+    json.stringify(1, 2);
+    json.pretty("{}");
+    return 0;
+}
+"#,
+        "t.rg",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("json.parse") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("json.stringify") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown function") && d.message.contains("json.pretty")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn json_requires_import() {
+    let diags = check_source("fn main(): Int { json.parse(\"{}\"); return 0; }\n", "t.rg");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("json") || d.message.contains("undefined")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn runtime_error_includes_call_trace() {
+    let result = run_source(
+        r#"
+fn inner(): Int {
+    return 1 + "x";
+}
+fn outer(): Int {
+    return inner();
+}
+fn main(): Int {
+    return outer();
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("from inner"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("from outer"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn runtime_error_traces_method() {
+    let result = run_source(
+        r#"
+class Boom {
+    fn bang(): Int {
+        return 1 + "x";
+    }
+}
+fn main(): Int {
+    var b = Boom {};
+    return b.bang();
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("from Boom.bang"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn runtime_error_trace_includes_module_file() {
+    let mut modules = HashMap::new();
+    modules.insert(
+        "util.rg".into(),
+        r#"
+mod util {
+    pub fn boom(): Int {
+        return 1 + "x";
+    }
+}
+"#
+        .into(),
+    );
+    let result = run_source_with_modules(
+        r#"
+import util;
+fn main(): Int {
+    return util.boom();
+}
+"#,
+        modules,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("from util.boom"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("util.rg"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn runtime_error_trace_from_imported_file() {
+    use std::fs;
+    let dir = std::env::temp_dir().join("rosegold_trace_mod");
+    let _ = fs::create_dir_all(&dir);
+    fs::write(
+        dir.join("util.rg"),
+        "mod util {\n    pub fn boom(): Int {\n        return 1 + \"x\";\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("main.rg"),
+        "import util;\nfn main(): Int {\n    return util.boom();\n}\n",
+    )
+    .unwrap();
+    let result = run_file(&dir.join("main.rg"));
+    assert!(!result.ok, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("from util.boom"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("util.rg"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("main.rg"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn missing_module_names_lookup_paths() {
+    let diags = check_source_with_modules(
+        "import no_such_mod;\nfn main(): Int { return 0; }\n",
+        "t.rg",
+        HashMap::new(),
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("no_such_mod")
+            && d.message.contains("tried")
+            && d.message.contains("no_such_mod.rg")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn examples_tests_rg_passes() {
+    let result = run_tests_file(&example("tests.rg"));
+    assert!(result.ok, "{}", result.stderr);
+    assert!(
+        result.stdout.contains("2/2 tests passed"),
+        "{}",
+        result.stdout
+    );
 }

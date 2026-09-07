@@ -133,6 +133,7 @@ impl Printer {
                 self.newline();
                 self.indent += 1;
                 for f in &s.fields {
+                    self.docs(f.doc.as_deref());
                     self.hashes(&f.leading);
                     self.pad();
                     self.write(&f.name);
@@ -165,6 +166,7 @@ impl Printer {
                 self.newline();
                 self.indent += 1;
                 for f in &c.fields {
+                    self.docs(f.doc.as_deref());
                     self.hashes(&f.leading);
                     self.pad();
                     self.write("var ");
@@ -506,11 +508,13 @@ impl Printer {
                 self.newline();
             }
             StmtKind::VarDecl(v) => {
+                self.docs(v.doc.as_deref());
                 self.pad();
                 self.var_decl(v);
                 self.newline();
             }
             StmtKind::ConstDecl(c) => {
+                self.docs(c.doc.as_deref());
                 self.pad();
                 self.write("const ");
                 self.write(&c.name);
@@ -847,6 +851,21 @@ mod tests {
     fn format_keeps_parens_for_precedence() {
         let out = format_source("fn main(): Int { print((1 + 2) * 3); return 0; }").unwrap();
         assert!(out.contains("(1 + 2) * 3"), "{out}");
+    }
+
+    #[test]
+    fn format_keeps_local_var_docs() {
+        let src = "fn main(): Int {\n    ## local counter\n    var n: Int = 1;\n    return n;\n}\n";
+        let out = format_source(src).unwrap();
+        assert!(out.contains("## local counter"), "{out}");
+        assert!(out.contains("var n: Int = 1;"), "{out}");
+    }
+
+    #[test]
+    fn format_keeps_class_field_docs() {
+        let src = "class Point {\n    ## X component\n    var x: Float = 0.0;\n}\n";
+        let out = format_source(src).unwrap();
+        assert!(out.contains("## X component"), "{out}");
     }
 
     #[test]

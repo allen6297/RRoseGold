@@ -9,6 +9,49 @@ pub(super) fn runtime_err(message: impl Into<String>, span: Span) -> RuntimeErro
     RuntimeError {
         message: message.into(),
         span,
+        exit_code: None,
+        trace: Vec::new(),
+        file: String::new(),
+    }
+}
+
+pub(super) fn exit_err(code: i32, span: Span) -> RuntimeError {
+    RuntimeError {
+        message: format!("exit {code}"),
+        span,
+        exit_code: Some(code),
+        trace: Vec::new(),
+        file: String::new(),
+    }
+}
+
+pub(super) fn attach_trace(
+    mut err: RuntimeError,
+    name: &str,
+    span: Span,
+    file: &str,
+) -> RuntimeError {
+    if err.exit_code.is_some() {
+        return err;
+    }
+    err.trace.push(crate::TraceFrame {
+        name: name.to_string(),
+        span,
+        file: file.to_string(),
+    });
+    err
+}
+
+/// Label used in traces: `helpers.rg` from a path or in-memory module key.
+pub(super) fn file_label(key: &str) -> String {
+    let name = std::path::Path::new(key)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(key);
+    if name.ends_with(".rg") {
+        name.to_string()
+    } else {
+        format!("{name}.rg")
     }
 }
 
@@ -539,5 +582,137 @@ pub(super) fn result_err(message: String) -> Value {
         module: "Result".to_string(),
         variant: "Err".to_string(),
         value: Some(Box::new(Value::String(message))),
+    }
+}
+
+pub(super) fn option_some(value: Value) -> Value {
+    Value::Enum {
+        module: "Option".to_string(),
+        variant: "Some".to_string(),
+        value: Some(Box::new(value)),
+    }
+}
+
+pub(super) fn option_none() -> Value {
+    Value::Enum {
+        module: "Option".to_string(),
+        variant: "None".to_string(),
+        value: None,
+    }
+}
+
+pub(super) fn json_parse(text: &str) -> Result<Value, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("invalid json: {e}"))?;
+    Ok(json_to_value(&v))
+}
+
+pub(super) fn json_stringify(value: &Value) -> Result<String, String> {
+    let v = json_from_value(value)?;
+    serde_json::to_string(&v).map_err(|e| e.to_string())
+}
+
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::None,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(u) = n.as_u64() {
+                if u <= i64::MAX as u64 {
+                    Value::Int(u as i64)
+                } else {
+                    Value::Float(n.as_f64().unwrap_or(0.0))
+                }
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<Value> = arr.iter().map(json_to_value).collect();
+            Value::Array(std::rc::Rc::new(std::cell::RefCell::new(items)))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = std::collections::HashMap::new();
+            for (k, val) in obj {
+                map.insert(k.clone(), json_to_value(val));
+            }
+            Value::Map(std::rc::Rc::new(std::cell::RefCell::new(map)))
+        }
+    }
+}
+
+fn json_from_value(v: &Value) -> Result<serde_json::Value, String> {
+    match v {
+        Value::Int(n) => Ok(serde_json::json!(*n)),
+        Value::Float(n) => serde_json::Number::from_f64(*n)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| "json cannot encode NaN or Infinity".to_string()),
+        Value::String(s) => Ok(serde_json::Value::String(s.clone())),
+        Value::Bool(b) => Ok(serde_json::Value::Bool(*b)),
+        Value::None | Value::Void => Ok(serde_json::Value::Null),
+        Value::Array(a) => {
+            let mut arr = Vec::new();
+            for item in a.borrow().iter() {
+                arr.push(json_from_value(item)?);
+            }
+            Ok(serde_json::Value::Array(arr))
+        }
+        Value::Map(m) => {
+            let mut obj = serde_json::Map::new();
+            for (k, val) in m.borrow().iter() {
+                obj.insert(k.clone(), json_from_value(val)?);
+            }
+            Ok(serde_json::Value::Object(obj))
+        }
+        Value::Struct { fields, .. } => {
+            let mut obj = serde_json::Map::new();
+            for (k, val) in fields.borrow().iter() {
+                obj.insert(k.clone(), json_from_value(val)?);
+            }
+            Ok(serde_json::Value::Object(obj))
+        }
+        Value::Enum {
+            module,
+            variant,
+            value,
+        } => {
+            let option = module == "Option" || module == "option";
+            let result = module == "Result" || module == "result";
+            if option && variant == "None" {
+                return Ok(serde_json::Value::Null);
+            }
+            if option && variant == "Some" {
+                return match value {
+                    Some(inner) => json_from_value(inner),
+                    None => Ok(serde_json::Value::Null),
+                };
+            }
+            if result && variant == "Ok" {
+                return match value {
+                    Some(inner) => json_from_value(inner),
+                    None => Ok(serde_json::Value::Null),
+                };
+            }
+            if result && variant == "Err" {
+                return Err("json cannot encode Result.Err".to_string());
+            }
+            Err(format!("json cannot encode enum {module}.{variant}"))
+        }
+        other => Err(format!("json cannot encode {}", other.type_name())),
+    }
+}
+
+pub(super) fn process_env(name: &str) -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = name;
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var(name).ok()
     }
 }

@@ -11,6 +11,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
+      - run: cargo run --quiet -- run examples/hello.rg
+      - run: cargo run --quiet -- run examples/class_trait.rg
+      - run: cargo run --quiet -- run examples/io_time.rg
+      - run: cargo run --quiet -- run examples/process.rg hello
+      - run: cargo run --quiet -- run examples/tour.rg
+      - run: cargo run --quiet -- run examples/json.rg
+      - run: cargo run --quiet -- run examples/signals.rg
+      - run: cargo run --quiet -- test examples/tests.rg
 
   vscode-scan:
     runs-on: ubuntu-latest
