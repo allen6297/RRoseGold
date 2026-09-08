@@ -151,7 +151,7 @@
         "label": "math",
         "detail": "stdlib",
         "signature": "import math",
-        "doc": "Numeric helpers (`abs`, `sin`, `clamp`, …). Requires `import math;`. Trig uses radians. `Vec2` is a crate class, not this module.",
+        "doc": "Numeric helpers (`abs`, `sin`, `clamp`, `random`, …). Requires `import math;`. Trig uses radians. `random` is not cryptographic. `Vec2` is a crate class, not this module.",
         "kind": "module"
     },
     {
@@ -394,11 +394,33 @@
         ]
     },
     {
+        "key": "math.random",
+        "label": "random",
+        "detail": "()",
+        "signature": "math.random(): Float",
+        "doc": "Float in `[0, 1)`. Not cryptographic.",
+        "kind": "function",
+        "template": "random()",
+        "params": []
+    },
+    {
+        "key": "math.rand_int",
+        "label": "rand_int",
+        "detail": "(n)",
+        "signature": "math.rand_int(n: Int): Int",
+        "doc": "Int in `0..n` (exclusive). `n` must be > 0. Not cryptographic.",
+        "kind": "function",
+        "template": "rand_int(${n})",
+        "params": [
+            "n"
+        ]
+    },
+    {
         "key": "io",
         "label": "io",
         "detail": "stdlib",
         "signature": "import io",
-        "doc": "Read, write, append, remove text files, and list or create directories. Uses the host disk (an in-memory VFS when compiled to wasm32).",
+        "doc": "Read, write, append, remove text or byte files, and list or create directories. Uses the host disk (an in-memory VFS when compiled to wasm32).",
         "kind": "module"
     },
     {
@@ -436,6 +458,31 @@
         "params": [
             "path",
             "text"
+        ]
+    },
+    {
+        "key": "io.read_bytes",
+        "label": "read_bytes",
+        "detail": "(path)",
+        "signature": "io.read_bytes(path: String): Result",
+        "doc": "Read a file as Result.Ok(Bytes). Missing or unreadable paths return Result.Err.",
+        "kind": "function",
+        "template": "read_bytes(${path})",
+        "params": [
+            "path"
+        ]
+    },
+    {
+        "key": "io.write_bytes",
+        "label": "write_bytes",
+        "detail": "(path, data)",
+        "signature": "io.write_bytes(path: String, data: Bytes | Array): Result",
+        "doc": "Overwrite a file with Bytes or an Array of Int 0..255. Creates the file if it is missing.",
+        "kind": "function",
+        "template": "write_bytes(${path}, ${data})",
+        "params": [
+            "path",
+            "data"
         ]
     },
     {
@@ -536,7 +583,7 @@
         "label": "time",
         "detail": "host",
         "signature": "import time",
-        "doc": "Wall-clock and VM elapsed time. Requires `import time;`.",
+        "doc": "Wall-clock, VM elapsed time, and a blocking wait. Requires `import time;`.",
         "kind": "module"
     },
     {
@@ -558,6 +605,18 @@
         "kind": "function",
         "template": "elapsed()",
         "params": []
+    },
+    {
+        "key": "time.sleep",
+        "label": "sleep",
+        "detail": "(seconds)",
+        "signature": "time.sleep(seconds: Float): Void",
+        "doc": "Block this thread for `seconds` (0 is a no-op; capped at one day). Stalls that thread, like other `io` calls.",
+        "kind": "function",
+        "template": "sleep(${seconds})",
+        "params": [
+            "seconds"
+        ]
     },
     {
         "key": "process",
@@ -1005,6 +1064,14 @@
         "doc": "Mutual exclusion lock for multi-step updates to shared arrays, maps, or objects across `spawn` tasks. `.lock()` / `.unlock()`. Double-lock from the same thread is an error.",
         "kind": "builtin",
         "template": "Mutex()"
+    },
+    {
+        "key": "Bytes",
+        "label": "Bytes",
+        "detail": "type",
+        "signature": "Bytes",
+        "doc": "Opaque byte buffer from `io.read_bytes`. `len()` / index `b[i]` → Int 0..255. Pass to `io.write_bytes`. Audio and gpu will want this.",
+        "kind": "type"
     },
     {
         "key": "Mutex.lock",

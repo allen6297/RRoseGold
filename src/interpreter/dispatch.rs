@@ -45,10 +45,11 @@ impl super::eval::EvalContext {
                 match &args[0] {
                     Value::String(s) => Ok(Value::Int(string_char_len(s))),
                     Value::Array(a) => Ok(Value::Int(lock(a).len() as i64)),
+                    Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
                     Value::Map(m) => Ok(Value::Int(lock(m).len() as i64)),
                     _ => Err(runtime_err(
                         format!(
-                            "len expects String, Array, or Map, got {}",
+                            "len expects String, Array, Map, or Bytes, got {}",
                             args[0].type_name()
                         ),
                         span,
@@ -513,6 +514,15 @@ impl super::eval::EvalContext {
                 }
                 _ => Err(runtime_err(format!("Task has no method '{name}'"), span)),
             },
+            Value::Bytes(b) => match name {
+                "len" => {
+                    if !_args.is_empty() {
+                        return Err(runtime_err("Bytes.len takes 0 arguments".to_string(), span));
+                    }
+                    Ok(Value::Int(b.len() as i64))
+                }
+                _ => Err(runtime_err(format!("Bytes has no method '{name}'"), span)),
+            },
             Value::Struct {
                 name: struct_name, ..
             } => self.ufcs_or_err(
@@ -758,6 +768,32 @@ impl super::eval::EvalContext {
                 let content = expect_string_arg(&args, 1, "io.write_text", "content", span)?;
                 Ok(io_unit_result(io_write_text(&path, &content)))
             }
+            ("io", "read_bytes") => {
+                if args.len() != 1 {
+                    return Err(runtime_err(
+                        "io.read_bytes takes 1 argument".to_string(),
+                        span,
+                    ));
+                }
+                let path = expect_string_arg(&args, 0, "io.read_bytes", "path", span)?;
+                Ok(match io_read_bytes(&path) {
+                    Ok(content) => result_ok(bytes_value(content)),
+                    Err(e) => result_err(e),
+                })
+            }
+            ("io", "write_bytes") => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "io.write_bytes takes 2 arguments".to_string(),
+                        span,
+                    ));
+                }
+                let path = expect_string_arg(&args, 0, "io.write_bytes", "path", span)?;
+                match bytes_from_value(&args[1]) {
+                    Ok(content) => Ok(io_unit_result(io_write_bytes(&path, &content))),
+                    Err(e) => Ok(result_err(e)),
+                }
+            }
             ("io", "append_text") => {
                 if args.len() != 2 {
                     return Err(runtime_err(
@@ -854,6 +890,11 @@ impl super::eval::EvalContext {
                     ));
                 }
                 Ok(Value::Float(self.shared.started.elapsed_secs()))
+            }
+            ("time", "sleep") => {
+                let secs = expect_secs(&args, span, "time.sleep")?;
+                time_sleep(secs);
+                Ok(Value::Void)
             }
             ("process", "argv") => {
                 if !args.is_empty() {
@@ -1148,7 +1189,6 @@ impl super::eval::EvalContext {
                     )),
                 }
             }
-            ("__ui", name) => self.ui_host(name, args, span),
             ("__math", "atan2") => {
                 if args.len() != 2 {
                     return Err(runtime_err(
@@ -1164,6 +1204,42 @@ impl super::eval::EvalContext {
                     )),
                 }
             }
+            ("__math", "random") => {
+                if !args.is_empty() {
+                    return Err(runtime_err(
+                        "__math.random takes 0 arguments".to_string(),
+                        span,
+                    ));
+                }
+                let mut state = lock(&self.shared.rng);
+                Ok(Value::Float(rng_f64(&mut state)))
+            }
+            ("__math", "rand_int") => {
+                if args.len() != 1 {
+                    return Err(runtime_err(
+                        "__math.rand_int takes 1 argument".to_string(),
+                        span,
+                    ));
+                }
+                let n = match &args[0] {
+                    Value::Int(n) => *n,
+                    _ => {
+                        return Err(runtime_err(
+                            format!("__math.rand_int expects Int, got {}", args[0].type_name()),
+                            span,
+                        ));
+                    }
+                };
+                if n <= 0 {
+                    return Err(runtime_err(
+                        "__math.rand_int expects n > 0".to_string(),
+                        span,
+                    ));
+                }
+                let mut state = lock(&self.shared.rng);
+                Ok(Value::Int((rng_next(&mut state) % n as u64) as i64))
+            }
+            ("__ui", name) => self.ui_host(name, args, span),
             _ => Err(runtime_err(
                 format!("unknown stdlib function {}.{}", module, name),
                 span,

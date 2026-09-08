@@ -1149,7 +1149,7 @@ impl<'a> TypeChecker<'a> {
         let obj = Self::type_known(self.infer_expr_type(object));
         let idx = Self::type_known(self.infer_expr_type(index));
         match obj.as_deref() {
-            Some("Array" | "String" | "Str") => {
+            Some("Array" | "String" | "Str" | "Bytes") => {
                 if let Some(i) = idx.as_deref() {
                     if !Self::is_int(i) {
                         self.error(
@@ -1187,7 +1187,7 @@ impl<'a> TypeChecker<'a> {
         }
         match Self::type_known(self.infer_expr_type(iter)).as_deref() {
             Some("Map" | "String" | "Str") => "String".to_string(),
-            Some("Int") => "Int".to_string(),
+            Some("Int" | "Bytes") => "Int".to_string(),
             _ => String::new(),
         }
     }
@@ -1273,6 +1273,7 @@ impl<'a> TypeChecker<'a> {
                 let obj = self.infer_expr_type(object)?;
                 match obj.as_str() {
                     "String" | "Str" => Some("String".to_string()),
+                    "Bytes" => Some("Int".to_string()),
                     "Array" | "Map" => None,
                     _ => None,
                 }
@@ -1330,7 +1331,9 @@ impl<'a> TypeChecker<'a> {
                     return sig.call_return();
                 }
                 match (obj_ty.as_str(), name.as_str()) {
-                    ("Array" | "String" | "Str" | "Map", "len") => Some("Int".to_string()),
+                    ("Array" | "String" | "Str" | "Map" | "Bytes", "len") => {
+                        Some("Int".to_string())
+                    }
                     ("Array", "first" | "last" | "pop") => None,
                     ("Map", "keys") => Some("Array".to_string()),
                     ("Mutex", "lock" | "unlock") => Some("Void".to_string()),
@@ -1435,6 +1438,7 @@ impl<'a> TypeChecker<'a> {
                         | "Mutex"
                         | "Channel"
                         | "Task"
+                        | "Bytes"
                         | "Fn"
                 ))
     }

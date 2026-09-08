@@ -17,6 +17,7 @@ pub(super) struct SharedState {
     module_resolver: ResolverRef,
     loaded_modules: Arc<Mutex<HashMap<String, ModuleRef>>>,
     pub(super) started: Clock,
+    pub(super) rng: Mutex<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     live_tasks: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
@@ -64,6 +65,7 @@ impl SharedState {
             module_resolver: resolver,
             loaded_modules: Arc::new(Mutex::new(HashMap::new())),
             started: Clock::capture(),
+            rng: Mutex::new(rng_seed()),
             #[cfg(not(target_arch = "wasm32"))]
             live_tasks: Mutex::new(Vec::new()),
         }
@@ -1722,6 +1724,7 @@ impl EvalContext {
                         .map(|c| Value::String(c.to_string()))
                         .collect::<Vec<_>>(),
                     Value::Array(a) => lock(a).iter().cloned().collect::<Vec<_>>(),
+                    Value::Bytes(b) => b.iter().map(|n| Value::Int(*n as i64)).collect::<Vec<_>>(),
                     Value::Map(m) => lock(m)
                         .keys()
                         .map(|k| Value::String(k.clone()))
@@ -2035,6 +2038,10 @@ impl EvalContext {
                         "len" => Ok(Value::Int(lock(&a).len() as i64)),
                         _ => Err(runtime_err(format!("Array has no member '{}'", name), span)),
                     },
+                    Value::Bytes(b) => match name.as_str() {
+                        "len" => Ok(Value::Int(b.len() as i64)),
+                        _ => Err(runtime_err(format!("Bytes has no member '{}'", name), span)),
+                    },
                     Value::Map(m) => match name.as_str() {
                         "len" => Ok(Value::Int(lock(&m).len() as i64)),
                         _ => Err(runtime_err(format!("Map has no member '{}'", name), span)),
@@ -2104,6 +2111,12 @@ impl EvalContext {
                         lock(a)
                             .get(i)
                             .cloned()
+                            .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
+                    }
+                    (Value::Bytes(b), Value::Int(n)) => {
+                        let i = *n as usize;
+                        b.get(i)
+                            .map(|n| Value::Int(*n as i64))
                             .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
                     }
                     (Value::String(s), Value::Int(n)) => {

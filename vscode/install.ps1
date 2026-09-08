@@ -11,7 +11,11 @@ $here = $PSScriptRoot
 Set-Location $here
 
 function Latest-Vsix {
-    Get-ChildItem -File -Filter "allen6297-*.vsix" -ErrorAction SilentlyContinue |
+    $hit = Get-ChildItem -File -Filter "rosegold-language-*.vsix" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($hit) { return $hit }
+    Get-ChildItem -File -Filter "*.vsix" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
 }

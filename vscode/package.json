@@ -2,7 +2,7 @@
   "name": "rosegold-language",
   "displayName": "RoseGold Language",
   "description": "Language support for the RoseGold programming language",
-  "version": "26.0.1",
+  "version": "26.0.2",
   "publisher": "allen6297",
   "license": "MIT",
   "icon": "icons/rosegold.png",
@@ -17,7 +17,7 @@
   "bugs": {
     "url": "https://github.com/allen6297/RoseGold/issues"
   },
-  "homepage": "https://github.com/allen6297/RoseGold#readme",
+  "homepage": "https://rosegold-dev.notion.site/",
   "engines": {
     "vscode": "^1.85.0"
   },

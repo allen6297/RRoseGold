@@ -9,7 +9,7 @@ if [[ "${1:-}" == "--force" ]]; then
 fi
 
 latest_vsix() {
-  ls -t allen6297-*.vsix 2>/dev/null | head -n1 || true
+  ls -t rosegold-language-*.vsix 2>/dev/null | head -n1 || ls -t *.vsix 2>/dev/null | head -n1 || true
 }
 
 vsix="$(latest_vsix)"

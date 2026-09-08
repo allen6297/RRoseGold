@@ -243,6 +243,10 @@ fn embedded_stdlib_is_crate_rg() {
         math.contains("__math.sin"),
         "math.sin should wrap the native primitive"
     );
+    assert!(
+        math.contains("__math.random"),
+        "math.random should wrap the native primitive"
+    );
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "option"));
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "result"));
     assert!(crate::stdlib::SOURCES.iter().any(|(n, _)| *n == "str"));
@@ -2693,6 +2697,7 @@ fn main(): Int {
     io.list_dir();
     io.read_stdin("x");
     io.read_line(1);
+    io.write_bytes("a.bin");
     io.chmod("a.txt");
     return 0;
 }
@@ -2726,6 +2731,12 @@ fn main(): Int {
     assert!(
         diags
             .iter()
+            .any(|d| d.message.contains("write_bytes") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
             .any(|d| d.message.contains("unknown function") && d.message.contains("io.chmod")),
         "{diags:?}"
     );
@@ -2738,6 +2749,7 @@ fn typecheck_time_arity() {
 import time;
 fn main(): Int {
     time.now(1);
+    time.sleep();
     return 0;
 }
 "#,
@@ -2747,6 +2759,12 @@ fn main(): Int {
         diags
             .iter()
             .any(|d| d.message.contains("time.now") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("time.sleep") && d.message.contains("expected 1 args")),
         "{diags:?}"
     );
 }
@@ -2871,6 +2889,111 @@ fn main(): Int {
     );
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines, ["true", "true", "true"], "{out}");
+}
+
+#[test]
+fn time_sleep_advances_elapsed() {
+    let out = assert_ok(
+        r#"
+import time;
+
+fn main(): Int {
+    var before = time.elapsed();
+    time.sleep(0.05);
+    var after = time.elapsed();
+    print(after > before);
+    print(after - before >= 0.04);
+    return 0;
+}
+"#,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines, ["true", "true"], "{out}");
+}
+
+#[test]
+fn math_random_and_rand_int() {
+    let out = assert_ok(
+        r#"
+import math;
+
+fn main(): Int {
+    var a = math.random();
+    var b = math.random();
+    print(a >= 0.0);
+    print(a < 1.0);
+    print(b >= 0.0);
+    print(b < 1.0);
+    print(math.rand_int(1) == 0);
+    var n = math.rand_int(6);
+    print(n >= 0);
+    print(n < 6);
+    return 0;
+}
+"#,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        ["true", "true", "true", "true", "true", "true", "true"],
+        "{out}"
+    );
+}
+
+#[test]
+fn math_rand_int_rejects_non_positive() {
+    let result = run_source(
+        r#"
+import math;
+fn main(): Int {
+    math.rand_int(0);
+    return 0;
+}
+"#,
+    );
+    assert!(!result.ok);
+    assert!(
+        result.stderr.contains("n > 0") || result.message.contains("n > 0"),
+        "{}",
+        result.message
+    );
+}
+
+#[test]
+fn io_bytes_roundtrip() {
+    use std::fs;
+    let dir = std::env::temp_dir().join("rosegold_io_bytes_test");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("blob.bin");
+    let path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let source = format!(
+        r#"
+import io;
+
+fn main(): Int {{
+    print(io.write_bytes("{path}", [0, 255, 10]).is_ok());
+    var data: Bytes = io.read_bytes("{path}").unwrap();
+    print(data.len());
+    print(data[0]);
+    print(data[1]);
+    print(data[2]);
+    print(io.write_bytes("{path}", data).is_ok());
+    var again: Bytes = io.read_bytes("{path}").unwrap();
+    print(again.len());
+    print(again[1]);
+    return 0;
+}}
+"#,
+        path = path_str
+    );
+    let out = assert_ok(&source);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        ["true", "3", "0", "255", "10", "true", "3", "255"],
+        "{out}"
+    );
 }
 
 #[test]

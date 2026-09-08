@@ -16,6 +16,7 @@ pub(super) fn native_method_arity(ty: &str, name: &str) -> Option<usize> {
         ("Channel", "recv" | "close") => 0,
         ("Channel", "recv_timeout") => 1,
         ("Task", "wait") => 1,
+        ("Bytes", "len") => 0,
         ("Option", "is_some" | "is_none" | "unwrap") => 0,
         ("Option", "unwrap_or") => 1,
         ("Result", "is_ok" | "is_err" | "unwrap") => 0,
@@ -29,11 +30,12 @@ pub(super) fn host_return_type(module: &str, name: &str) -> Option<&'static str>
         (
             "io",
             "read_text" | "read_lines" | "write_text" | "append_text" | "remove" | "mkdir"
-            | "list_dir" | "read_stdin",
+            | "list_dir" | "read_stdin" | "read_bytes" | "write_bytes",
         ) => "Result",
         ("io", "exists" | "is_dir") => "Bool",
         ("io", "read_line") => "Option",
         ("time", "now" | "elapsed") => "Float",
+        ("time", "sleep") => "Void",
         ("process", "argv") => "Array",
         ("process", "env") => "Option",
         ("process", "exit") => "Void",
@@ -42,6 +44,8 @@ pub(super) fn host_return_type(module: &str, name: &str) -> Option<&'static str>
         ("path", "join" | "dirname" | "ext") => "String",
         ("http", "get" | "post") => "Result",
         ("regex", "is_match" | "find") => "Result",
+        ("__math", "sin" | "cos" | "sqrt" | "pow" | "atan2" | "to_float" | "random") => "Float",
+        ("__math", "to_int" | "rand_int") => "Int",
         ("__ui", "theme" | "alert" | "window" | "begin" | "end" | "widget" | "bind" | "pump") => {
             "Void"
         }
@@ -70,11 +74,13 @@ pub fn stdlib_arity(module: &str, name: &str) -> Option<usize> {
     Some(match (module, name) {
         (
             "io",
-            "read_text" | "read_lines" | "exists" | "remove" | "mkdir" | "list_dir" | "is_dir",
+            "read_text" | "read_lines" | "exists" | "remove" | "mkdir" | "list_dir" | "is_dir"
+            | "read_bytes",
         ) => 1,
-        ("io", "write_text" | "append_text") => 2,
+        ("io", "write_text" | "append_text" | "write_bytes") => 2,
         ("io", "read_stdin" | "read_line") => 0,
         ("time", "now" | "elapsed") => 0,
+        ("time", "sleep") => 1,
         ("process", "argv") => 0,
         ("process", "env" | "exit") => 1,
         ("process", "run") => 2,
@@ -84,7 +90,8 @@ pub fn stdlib_arity(module: &str, name: &str) -> Option<usize> {
         ("http", "get") => 1,
         ("http", "post") => 2,
         ("regex", "is_match" | "find") => 2,
-        ("__math", "sin" | "cos" | "sqrt" | "to_int" | "to_float") => 1,
+        ("__math", "sin" | "cos" | "sqrt" | "to_int" | "to_float" | "rand_int") => 1,
+        ("__math", "random") => 0,
         ("__math", "pow" | "atan2") => 2,
         ("__str", "contains" | "starts_with" | "ends_with" | "repeat" | "split") => 2,
         ("__str", "length" | "is_empty" | "upper" | "lower" | "trim") => 1,

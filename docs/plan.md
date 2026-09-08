@@ -11,11 +11,26 @@ Work for RoseGold that is not happening yet. Language and host APIs first; UI an
 5. ~~Generic `unwrap_or`, array `for`-in types, `?` on `Result`~~ — done
 6. ~~Remaining host modules (`path`, `http`, `regex`)~~ — done (`path.join`/`dirname`/`ext`, `http.get`/`post`, `regex.is_match`/`find`)
 7. ~~Concurrency polish~~ — done (`Channel.close`, recv-after-close `none`, `recv_timeout` / `Task.wait`)
-8. Ship the editor — VSIX sideload done (`vscode/install.ps1` / `install.sh`). Marketplace / Open VSX: id **`allen6297.rosegold-language`**. See `vscode/PUBLISHING.md`.
+8. Ship the editor — VSIX sideload done (`vscode/install.ps1` / `install.sh`). Marketplace / Open VSX is **26.0.1**: id **`allen6297.rosegold-language`**. See `vscode/PUBLISHING.md`.
 9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, row/scroll, field/checkbox/slider/select, progress, `open`/`save`, separator/spacer, `quit`/`invalidate`, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered. File dialogs return `none` during `pump()` / tests.
 10. ~~`rosegold vendor` when people share `.rg` files~~ — done (`vendor <git-url>`, lock-only `vendor`, `vendor remove`, `rg.toml`, collision folders `vendor/<name>-<version>/`)
 
 Bytecode / JIT only if something is actually slow after that.
+
+## Next versions
+
+Versioning is **Year.Version.Patch**. `26` is 2026. Version is the line within that year. Patch is the same line — the editor `26.0.1` is a patch of `26.0.0`, not a new language. `27.0.0` would be 2027. The crate is still `0.1.0`.
+
+| Version | Ships | Why then |
+|---|---|---|
+| **26.0.0** | Language 1–7, `ui`, vendor, `sleep` / `random` / `Bytes` | Current tree. Done. |
+| **26.0.1** | Marketplace + Open VSX (`allen6297.rosegold-language`) | Same language. People can install without `install.ps1`. Sideload stays. |
+| **26.1.0** | Leftover script hosts: `clipboard`, open-URL, `hash` (`sha256`) | Tiny. Not a framework. |
+| **26.2.0** | `import audio` — play / stop a sample, volume | First optional native host. Needs `__audio`. Not a DAW. |
+| **26.3.0** | `import gpu` + `import image` | Draw needs pixels. Loaders stay in `image`, not `gpu`. |
+| **26.4.0** | `import input` | Gamepad / raw keys outside egui. After there is something to draw. |
+| **26.5.0** | `import net`, file watch, compress | Only if a script actually needs sockets / watch / zip. `http` stays request/response. |
+| **Not a version** | Bytecode / JIT, registry, FFI, SQLite, MIDI, camera, Bluetooth | Never unless something is measured slow, or it is in **Not this**. |
 
 ## 2. Language
 
@@ -44,6 +59,48 @@ Same pattern as `io`: native (or `.rg` wrapping `__host`), `import` required, ti
 | `path` join / dirname / ext | `io` is files, not paths. |
 | `http` get/post → `Result` | One useful networked script. |
 | `regex` | `str.contains` is not search. |
+
+## Frameworks (optional surfaces)
+
+Language + host (`io`, `json`, `path`, `process`, closures, `?`) are the default surface. You need those to write a script.
+
+A **framework** is an optional stack you opt into with `import`. Not everyone needs it. `import ui` is the first: a window if you want one. Later examples: a game engine, an ECS. Same language, not a dialect.
+
+No new syntax and no second highlighter color — they look like any other module. A game engine or ECS should ship as a library (`vendor/` + `lib.rg`), not new keywords. `ui` stays in stdlib only because the host (`__ui`) has to own the window; keep that exception small.
+
+**Later native hosts (same exception as `ui`):** `import audio` and `import gpu`. Sound and a GPU surface cannot stay in `.rg`; they need a thin `__audio` / `__gpu` and a `.rg` wrapper. Tiny: play/stop a sample, clear/draw, not a DAW or a scene graph. Do not fold them into `ui`. An engine or ECS *uses* `ui` / `audio` / `gpu`; it does not become new syntax.
+
+Catalog and docs can mark these as optional so hover and the tour do not treat `ui` as core as `io`.
+
+## Later primitives
+
+After the editor (item 8). Same rule as `io`: `import` required, tiny surface, `.rg` wrapping `__host`. Do not add syntax.
+
+**First (scripts, not a framework)** — `.rg` cannot wait, roll dice, or hold bytes:
+
+- ~~`time.sleep(seconds)`~~ — done (`time.sleep(seconds)`; 0 is a no-op)
+- ~~`math.random`~~ — done (`math.random(): Float` in `[0, 1)`, `math.rand_int(n): Int` in `0..n`. Not crypto)
+- ~~binary `io`~~ — done (`io.read_bytes` / `write_bytes`; `Bytes` blob, `len`, index `b[i]`. `write_bytes` also takes an Array of Int 0..255)
+
+**Optional hosts (game / tool)** — only when something needs them:
+
+- `import audio` — play / stop a sample, volume. Not a DAW
+- `import gpu` — clear / draw. Not a scene graph. Loaders stay out (`image`)
+- `import net` — TCP / UDP. `http` stays request/response
+- `import input` — gamepad / raw keys outside egui widgets
+- `import image` — decode PNG / JPEG to pixels for `gpu`
+- `import clipboard` — get / set text, next to `ui`
+
+**Useful, not urgent:**
+
+- file watch
+- `hash` (`sha256`) — possible in `.rg`, painful
+- compress (gzip / zip)
+- open-URL (one host call)
+
+**Libraries, not hosts:** physics, ECS, scene graph — `.rg` on `gpu` / `ui` / `audio`.
+
+**Not a primitive:** SQLite, MIDI, camera, Bluetooth, FFI / `dlopen`. Tray, an a11y tree as a project, OS chrome (already not `ui`).
 
 ## 4. Concurrency
 
@@ -128,7 +185,7 @@ Later, still one call each:
 - ~~**`ui.progress(t)`**~~ — done (`0..1`, clamped).
 - A second window or a dialog besides `alert` is optional. Do not invent a window manager.
 
-Still not: canvas, animation, routing, menus-as-a-platform, tray, shaders, an a11y tree as a project, OS dark/light sync.
+Still not in `ui`: canvas, animation, routing, menus-as-a-platform, tray, shaders, an a11y tree as a project, OS dark/light sync. Draw/shaders wait for `import gpu`.
 
 ## 7. Vendor, not a registry
 
@@ -178,9 +235,11 @@ If something feels slow before that, fix **values** first: arrays/maps sit behin
 ## Not this
 
 - Package registry. Vendor + git SHAs first.
-- Framework stdlib until people share `.rg` files.
+- Frameworks as language features. Optional stacks stay behind `import`; a later engine / ECS is a library, not syntax.
 - Per-OS native UI (`win` / `app` / `gtk`).
 - SwiftUI-the-language (result builders, `@State`, `$binding`, `some View`).
 - Wrapping all of Win32 / AppKit / GTK.
 - Bytecode / JIT / register VM until the surface settles and something is actually slow.
 - CSS, material, layout engine, or OS appearance sync in `ui` v1.
+- SQLite, MIDI, camera, Bluetooth, FFI / `dlopen` as language hosts.
+- Physics / ECS / scene graph in the crate — those are `.rg` libraries.

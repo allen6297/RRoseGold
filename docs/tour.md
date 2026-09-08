@@ -8,7 +8,7 @@ rosegold run examples/tour.rg
 rosegold test examples/tests.rg
 ```
 
-Types: `Int`, `Float`, `String` (alias `Str`), `Bool`, `Void`, `Array`, `Map`, `Option`, `Result`, `Mutex`, `Channel`, `Task`. `none` is the missing value.
+Types: `Int`, `Float`, `String` (alias `Str`), `Bool`, `Void`, `Array`, `Bytes`, `Map`, `Option`, `Result`, `Mutex`, `Channel`, `Task`. `none` is the missing value.
 
 ## Values and control flow
 
@@ -158,8 +158,8 @@ Require `import`:
 
 | Module | Role |
 |---|---|
-| `io` | `read_text` / `write_text` / `exists` / `mkdir` / `read_stdin()` / `read_line()` / … (many return `Result`) |
-| `time` | `now()` Unix seconds; `elapsed()` since this VM started |
+| `io` | `read_text` / `write_text` / `read_bytes` / `write_bytes` / `exists` / `mkdir` / `read_stdin()` / `read_line()` / … (many return `Result`) |
+| `time` | `now()` Unix seconds; `elapsed()` since this VM started; `sleep(seconds)` blocks this thread |
 | `process` | `argv()`, `env(name)`, `exit(code)`, `run(cmd, args)` → `Result` (stdout or error) |
 | `json` | `parse(text)` / `stringify(value)` → `Result` |
 | `path` | `join(a, b)`, `dirname(p)`, `ext(p)` |
@@ -169,7 +169,7 @@ Require `import`:
 
 JSON objects become `Map`, arrays `Array`, `null` becomes `none`. `Option.None` stringifies as `null`.
 
-Crate `.rg` stdlib: `math`, `str`, `vec`, `option`, `result`, `checks`, `ui`.
+Crate `.rg` stdlib: `math` (`random()` in `[0, 1)`, `rand_int(n)` in `0..n`, not crypto), `str`, `vec`, `option`, `result`, `checks`, `ui`.
 
 ## Concurrency
 

@@ -82,6 +82,7 @@ pub(super) fn value_eq(a: &Value, b: &Value) -> bool {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| value_eq(x, y))
             }
         }
+        (Value::Bytes(a), Value::Bytes(b)) => a == b,
         (Value::Map(a), Value::Map(b)) => {
             if std::sync::Arc::ptr_eq(a, b) {
                 true
@@ -312,6 +313,39 @@ impl Clock {
     }
 }
 
+pub(super) fn rng_seed() -> u64 {
+    let bits = unix_now_secs().to_bits();
+    let mix = bits ^ bits.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15;
+    if mix == 0 { 0xA5A5_A5A5_A5A5_A5A5 } else { mix }
+}
+
+pub(super) fn rng_next(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+pub(super) fn rng_f64(state: &mut u64) -> f64 {
+    (rng_next(state) >> 11) as f64 / ((1u64 << 53) as f64)
+}
+
+pub(super) fn time_sleep(secs: f64) {
+    let d = duration_secs(secs);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::sleep(d);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let start = js_sys::Date::now();
+        let ms = d.as_secs_f64() * 1000.0;
+        while js_sys::Date::now() - start < ms {}
+    }
+}
+
 pub(super) fn unix_now_secs() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -345,7 +379,7 @@ mod wasm_fs {
     use super::normalize_io_path;
 
     enum Entry {
-        File(String),
+        File(Vec<u8>),
         Dir,
     }
 
@@ -374,6 +408,11 @@ mod wasm_fs {
     }
 
     pub fn read(path: &str) -> Result<String, String> {
+        let bytes = read_bytes(path)?;
+        String::from_utf8(bytes).map_err(|_| format!("not utf-8: {path}"))
+    }
+
+    pub fn read_bytes(path: &str) -> Result<Vec<u8>, String> {
         let path = normalize_io_path(path);
         FILES.with(|fs| match fs.borrow().get(&path) {
             Some(Entry::File(content)) => Ok(content.clone()),
@@ -383,13 +422,17 @@ mod wasm_fs {
     }
 
     pub fn write(path: &str, content: &str) -> Result<(), String> {
+        write_bytes(path, content.as_bytes())
+    }
+
+    pub fn write_bytes(path: &str, content: &[u8]) -> Result<(), String> {
         let path = normalize_io_path(path);
         FILES.with(|fs| {
             let mut map = fs.borrow_mut();
             if matches!(map.get(&path), Some(Entry::Dir)) {
                 return Err(format!("is a directory: {path}"));
             }
-            map.insert(path, Entry::File(content.to_string()));
+            map.insert(path, Entry::File(content.to_vec()));
             Ok(())
         })
     }
@@ -401,11 +444,11 @@ mod wasm_fs {
             match map.get_mut(&path) {
                 Some(Entry::Dir) => Err(format!("is a directory: {path}")),
                 Some(Entry::File(existing)) => {
-                    existing.push_str(content);
+                    existing.extend_from_slice(content.as_bytes());
                     Ok(())
                 }
                 None => {
-                    map.insert(path, Entry::File(content.to_string()));
+                    map.insert(path, Entry::File(content.as_bytes().to_vec()));
                     Ok(())
                 }
             }
@@ -486,6 +529,17 @@ pub(super) fn io_read_text(path: &str) -> Result<String, String> {
     }
 }
 
+pub(super) fn io_read_bytes(path: &str) -> Result<Vec<u8>, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_fs::read_bytes(path)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::read(path).map_err(|e| e.to_string())
+    }
+}
+
 pub(super) fn io_write_text(path: &str, content: &str) -> Result<(), String> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -494,6 +548,46 @@ pub(super) fn io_write_text(path: &str, content: &str) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::fs::write(path, content).map_err(|e| e.to_string())
+    }
+}
+
+pub(super) fn io_write_bytes(path: &str, content: &[u8]) -> Result<(), String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_fs::write_bytes(path, content)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::write(path, content).map_err(|e| e.to_string())
+    }
+}
+
+pub(super) fn bytes_from_value(v: &Value) -> Result<Vec<u8>, String> {
+    match v {
+        Value::Bytes(b) => Ok(b.to_vec()),
+        Value::Array(a) => {
+            let items = lock(a).clone();
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::Int(n) if (0..=255).contains(n) => out.push(*n as u8),
+                    Value::Int(n) => {
+                        return Err(format!("byte {i} out of range 0..255: {n}"));
+                    }
+                    other => {
+                        return Err(format!(
+                            "write_bytes array items must be Int, got {}",
+                            other.type_name()
+                        ));
+                    }
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(format!(
+            "write_bytes expects Bytes or Array of Int, got {}",
+            v.type_name()
+        )),
     }
 }
 

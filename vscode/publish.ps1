@@ -37,9 +37,14 @@ if ($LASTEXITCODE -ne 0) {
     throw "vsce package failed with exit $LASTEXITCODE"
 }
 
-$vsix = Get-ChildItem -File -Filter "allen6297-*.vsix" |
+$vsix = Get-ChildItem -File -Filter "rosegold-language-*.vsix" |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
+if (-not $vsix) {
+    $vsix = Get-ChildItem -File -Filter "*.vsix" |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
 if (-not $vsix) {
     throw "No .vsix produced in $here"
 }

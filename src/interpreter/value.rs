@@ -39,6 +39,10 @@ pub(crate) fn array_value(items: Vec<Value>) -> Value {
     Value::Array(Arc::new(Mutex::new(items)))
 }
 
+pub(crate) fn bytes_value(data: Vec<u8>) -> Value {
+    Value::Bytes(Arc::from(data))
+}
+
 pub(crate) fn map_value(map: HashMap<String, Value>) -> Value {
     Value::Map(Arc::new(Mutex::new(map)))
 }
@@ -253,6 +257,7 @@ pub enum Value {
     Void,
     None,
     Array(ArrayRef),
+    Bytes(Arc<[u8]>),
     Map(MapRef),
     Range(i64, i64, bool),
     Enum {
@@ -304,6 +309,7 @@ impl PartialEq for Value {
                     a == b
                 }
             }
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => {
                 if Arc::ptr_eq(a, b) {
                     true
@@ -392,6 +398,7 @@ impl Value {
             Value::Float(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !lock(a).is_empty(),
+            Value::Bytes(b) => !b.is_empty(),
             Value::Map(m) => !lock(m).is_empty(),
             Value::Range(start, end, inclusive) => {
                 if *inclusive {
@@ -430,6 +437,7 @@ impl Value {
             Value::Void => "Void".to_string(),
             Value::None => "none".to_string(),
             Value::Array(_) => "Array".to_string(),
+            Value::Bytes(_) => "Bytes".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Range(_, _, _) => "Range".to_string(),
             Value::Enum {
@@ -462,6 +470,7 @@ impl Value {
                 let parts: Vec<String> = items.iter().map(Value::to_string).collect();
                 format!("[{}]", parts.join(", "))
             }
+            Value::Bytes(b) => format!("bytes({})", b.len()),
             Value::Map(m) => {
                 let entries: Vec<(String, Value)> = lock(m)
                     .iter()

@@ -145,4 +145,12 @@ pub mod math {
         }
         return x;
     }
+
+    pub fn random(): Float {
+        return __math.random();
+    }
+
+    pub fn rand_int(n: Int): Int {
+        return __math.rand_int(n);
+    }
 }
