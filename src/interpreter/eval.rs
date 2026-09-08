@@ -215,7 +215,7 @@ impl EvalContext {
         self.data_mut(|d| d.stdout.push_str(s));
     }
 
-    pub(super) fn fork_task(&self) -> EvalContext {
+    pub(crate) fn fork_task(&self) -> EvalContext {
         EvalContext {
             shared: Arc::clone(&self.shared),
             env: Environment::new(),
@@ -227,7 +227,7 @@ impl EvalContext {
         }
     }
 
-    fn join_live_tasks(&self) {
+    pub(crate) fn join_live_tasks(&self) {
         #[cfg(not(target_arch = "wasm32"))]
         loop {
             let handles: Vec<_> = std::mem::take(&mut *lock(&self.shared.live_tasks));
@@ -238,6 +238,10 @@ impl EvalContext {
                 let _ = handle.join();
             }
         }
+    }
+
+    pub(crate) fn register_live_task(&self, handle: std::thread::JoinHandle<()>) {
+        lock(&self.shared.live_tasks).push(handle);
     }
 
     fn spawn_expr(&mut self, inner: &Expr, span: Span) -> Result<Value, RuntimeError> {
@@ -314,7 +318,7 @@ impl EvalContext {
         }
     }
 
-    fn spawn_value(
+    pub(crate) fn spawn_value(
         &mut self,
         f: Value,
         args: Vec<Value>,
@@ -498,7 +502,7 @@ impl EvalContext {
         self.data(|d| d.argv.clone())
     }
 
-    pub(super) fn connect_signal(
+    pub(crate) fn connect_signal(
         &mut self,
         signal: &str,
         listener: Value,
@@ -528,6 +532,7 @@ impl EvalContext {
                     ));
                 }
             }
+            Value::BytecodeFn { .. } => {}
             Value::Closure(c) => {
                 if c.params.len() != arity {
                     return Err(runtime_err(
@@ -555,6 +560,9 @@ impl EvalContext {
                 Value::FnRef { name } => list
                     .iter()
                     .any(|v| matches!(v, Value::FnRef { name: n } if n == name)),
+                Value::BytecodeFn { fn_idx, .. } => list
+                    .iter()
+                    .any(|v| matches!(v, Value::BytecodeFn { fn_idx: i, .. } if i == fn_idx)),
                 _ => false,
             };
             if !dup {
@@ -562,6 +570,18 @@ impl EvalContext {
             }
         });
         Ok(())
+    }
+
+    pub(crate) fn current_file(&self) -> &str {
+        &self.current_file
+    }
+
+    pub(crate) fn set_vm_file(&mut self, file: String) -> String {
+        std::mem::replace(&mut self.current_file, file)
+    }
+
+    pub(crate) fn signal_listeners(&self, signal: &str) -> Vec<Value> {
+        self.data(|d| d.signal_listeners.get(signal).cloned().unwrap_or_default())
     }
 
     pub(super) fn emit_signal(
@@ -1718,31 +1738,9 @@ impl EvalContext {
                 if let Some(flow) = self.take_pending_return() {
                     return Ok(flow);
                 }
-                let items = match &iter_value {
-                    Value::String(s) => s
-                        .chars()
-                        .map(|c| Value::String(c.to_string()))
-                        .collect::<Vec<_>>(),
-                    Value::Array(a) => lock(a).iter().cloned().collect::<Vec<_>>(),
-                    Value::Bytes(b) => b.iter().map(|n| Value::Int(*n as i64)).collect::<Vec<_>>(),
-                    Value::Map(m) => lock(m)
-                        .keys()
-                        .map(|k| Value::String(k.clone()))
-                        .collect::<Vec<_>>(),
-                    Value::Int(n) => (0..*n).map(Value::Int).collect::<Vec<_>>(),
-                    Value::Range(start, end, inclusive) => {
-                        if *inclusive {
-                            (*start..=*end).map(Value::Int).collect::<Vec<_>>()
-                        } else {
-                            (*start..*end).map(Value::Int).collect::<Vec<_>>()
-                        }
-                    }
-                    _ => {
-                        return Err(runtime_err(
-                            format!("cannot iterate over {}", iter_value.type_name()),
-                            span,
-                        ));
-                    }
+                let items = match iter_items(iter_value, span)? {
+                    Value::Array(a) => lock(&a).clone(),
+                    _ => unreachable!("iter_items returns Array"),
                 };
                 for item in items {
                     self.env.push_scope();
@@ -1839,27 +1837,9 @@ impl EvalContext {
                 end,
                 inclusive,
             } => {
-                let s = match self.eval_expr(start)? {
-                    Value::Int(n) => n,
-                    Value::Float(n) => n as i64,
-                    v => {
-                        return Err(runtime_err(
-                            format!("range start must be Int, got {}", v.type_name()),
-                            span,
-                        ));
-                    }
-                };
-                let e = match self.eval_expr(end)? {
-                    Value::Int(n) => n,
-                    Value::Float(n) => n as i64,
-                    v => {
-                        return Err(runtime_err(
-                            format!("range end must be Int, got {}", v.type_name()),
-                            span,
-                        ));
-                    }
-                };
-                Ok(Value::Range(s, e, *inclusive))
+                let s = self.eval_expr(start)?;
+                let e = self.eval_expr(end)?;
+                range_value(s, e, *inclusive, span)
             }
             ExprKind::Ident(name) => {
                 if let Some(v) = self.lookup_ident(name) {
@@ -2105,36 +2085,7 @@ impl EvalContext {
             ExprKind::Index { object, index } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
-                match (&obj, &idx) {
-                    (Value::Array(a), Value::Int(n)) => {
-                        let i = *n as usize;
-                        lock(a)
-                            .get(i)
-                            .cloned()
-                            .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
-                    }
-                    (Value::Bytes(b), Value::Int(n)) => {
-                        let i = *n as usize;
-                        b.get(i)
-                            .map(|n| Value::Int(*n as i64))
-                            .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
-                    }
-                    (Value::String(s), Value::Int(n)) => {
-                        let i = *n as usize;
-                        s.chars()
-                            .nth(i)
-                            .map(|c| Value::String(c.to_string()))
-                            .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
-                    }
-                    (Value::Map(m), Value::String(k)) => lock(m)
-                        .get(k)
-                        .cloned()
-                        .ok_or_else(|| runtime_err(format!("key '{}' not found", k), span)),
-                    _ => Err(runtime_err(
-                        format!("cannot index {} with {}", obj.type_name(), idx.type_name()),
-                        span,
-                    )),
-                }
+                index_get(&obj, &idx, span)
             }
             ExprKind::Match { expr, arms } => {
                 let value = self.eval_expr(expr)?;
@@ -2300,63 +2251,14 @@ impl EvalContext {
                     ExprKind::Index { object, index } => {
                         let obj = self.eval_expr(object)?;
                         let idx = self.eval_expr(index)?;
-                        match obj {
-                            Value::Array(a) => {
-                                let i = match idx {
-                                    Value::Int(n) => n as usize,
-                                    _ => {
-                                        return Err(runtime_err(
-                                            "array index must be Int".to_string(),
-                                            span,
-                                        ));
-                                    }
-                                };
-                                let new_value = if *op == AssignOp::Assign {
-                                    value.clone()
-                                } else {
-                                    let old = lock(&a)
-                                        .get(i)
-                                        .ok_or_else(|| {
-                                            runtime_err("index out of bounds".to_string(), span)
-                                        })?
-                                        .clone();
-                                    apply_assign_op(old, &value, op, span)?
-                                };
-                                let mut arr = lock(&a);
-                                if i < arr.len() {
-                                    arr[i] = new_value;
-                                } else {
-                                    return Err(runtime_err(
-                                        "index out of bounds".to_string(),
-                                        span,
-                                    ));
-                                }
-                                Ok(value)
-                            }
-                            Value::Map(m) => {
-                                let k = match idx {
-                                    Value::String(s) => s,
-                                    _ => {
-                                        return Err(runtime_err(
-                                            "map key must be String".to_string(),
-                                            span,
-                                        ));
-                                    }
-                                };
-                                let new_value = if *op == AssignOp::Assign {
-                                    value.clone()
-                                } else {
-                                    let old = lock(&m).get(&k).cloned().unwrap_or(Value::None);
-                                    apply_assign_op(old, &value, op, span)?
-                                };
-                                lock(&m).insert(k, new_value);
-                                Ok(value)
-                            }
-                            _ => Err(runtime_err(
-                                format!("cannot assign to {}", obj.type_name()),
-                                span,
-                            )),
-                        }
+                        let new_value = if *op == AssignOp::Assign {
+                            value.clone()
+                        } else {
+                            let old = index_get_assign(&obj, &idx, span)?;
+                            apply_assign_op(old, &value, op, span)?
+                        };
+                        index_set(&obj, &idx, new_value, span)?;
+                        Ok(value)
                     }
                     ExprKind::Member { object, name } => {
                         let obj = self.eval_expr(object)?;

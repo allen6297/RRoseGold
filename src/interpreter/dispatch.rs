@@ -9,7 +9,7 @@ use super::ops::*;
 use super::value::*;
 
 impl super::eval::EvalContext {
-    pub(super) fn call_builtin_or_fn(
+    pub(crate) fn call_builtin_or_fn(
         &mut self,
         name: &str,
         args: Vec<Value>,
@@ -125,7 +125,7 @@ impl super::eval::EvalContext {
         }
     }
 
-    pub(super) fn call_member(
+    pub(crate) fn call_member(
         &mut self,
         object: &Value,
         name: &str,

@@ -276,6 +276,13 @@ pub enum Value {
     },
     /// Lambda / closure (`fn() { ... }`).
     Closure(Arc<Closure>),
+    /// Bytecode lambda: function index plus captured upvalues.
+    BytecodeFn {
+        fn_idx: usize,
+        captures: Vec<Value>,
+    },
+    /// Shared local for bytecode closures (`n = 10` after capture).
+    Upvalue(Arc<Mutex<Value>>),
     Struct {
         name: String,
         fields: FieldMapRef,
@@ -354,6 +361,17 @@ impl PartialEq for Value {
             (Value::FnRef { name: a }, Value::FnRef { name: b }) => a == b,
             (Value::Closure(a), Value::Closure(b)) => Arc::ptr_eq(a, b) || **a == **b,
             (
+                Value::BytecodeFn {
+                    fn_idx: ia,
+                    captures: ca,
+                },
+                Value::BytecodeFn {
+                    fn_idx: ib,
+                    captures: cb,
+                },
+            ) => ia == ib && ca == cb,
+            (Value::Upvalue(a), Value::Upvalue(b)) => Arc::ptr_eq(a, b) || *lock(a) == *lock(b),
+            (
                 Value::Struct {
                     name: na,
                     fields: fa,
@@ -416,6 +434,8 @@ impl Value {
             Value::NativeFn { .. } => true,
             Value::FnRef { .. } => true,
             Value::Closure(_) => true,
+            Value::BytecodeFn { .. } => true,
+            Value::Upvalue(u) => lock(u).truthy(),
             Value::Struct { .. } => true,
             Value::StructType(_) => true,
             Value::EnumType(_) => true,
@@ -447,6 +467,8 @@ impl Value {
             Value::NativeFn { module, name } => format!("{}.{}", module, name),
             Value::FnRef { name } => format!("fn {name}"),
             Value::Closure(_) => "Fn".to_string(),
+            Value::BytecodeFn { .. } => "Fn".to_string(),
+            Value::Upvalue(u) => lock(u).type_name(),
             Value::Struct { name, .. } => name.clone(),
             Value::StructType(s) => s.name.clone(),
             Value::EnumType(e) => e.name.clone(),
@@ -507,6 +529,8 @@ impl Value {
             Value::NativeFn { module, name } => format!("{}.{}", module, name),
             Value::FnRef { name } => format!("fn {name}"),
             Value::Closure(_) => "fn()".to_string(),
+            Value::BytecodeFn { .. } => "fn()".to_string(),
+            Value::Upvalue(u) => lock(u).to_string(),
             Value::Struct { name, fields } => {
                 let entries: Vec<(String, Value)> = lock(fields)
                     .iter()

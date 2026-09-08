@@ -2,8 +2,18 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
-version="26.0.2"
 cd "$root"
+
+pkg="$root/vscode/package.json"
+if [[ ! -f "$pkg" ]]; then
+  echo "missing $pkg" >&2
+  exit 1
+fi
+version="$(sed -n 's/.*"version": "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' "$pkg" | head -n1)"
+if [[ -z "$version" ]]; then
+  echo "missing version in $pkg" >&2
+  exit 1
+fi
 
 # WSL does not see Windows `cargo` as `cargo` — it's `cargo.exe` under the Windows home.
 if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -51,31 +61,6 @@ echo "Updating to version $version"
 "$CARGO" build
 "$CARGO" install --path . --force
 
-# `sed -i` tries to chmod a tempfile; that fails on /mnt/c (Windows drives).
-replace_version() {
-  local file="$1"
-  local pattern="$2"
-  local tmp
-  tmp="$(mktemp)"
-  sed "$pattern" "$file" > "$tmp"
-  cat "$tmp" > "$file"
-  rm -f "$tmp"
-}
-
-pkg="$root/vscode/package.json"
-if [[ ! -f "$pkg" ]]; then
-  echo "missing $pkg" >&2
-  exit 1
-fi
-
-replace_version "$pkg" "s/\"version\": \"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\"/\"version\": \"$version\"/"
-
-lock="$root/vscode/package-lock.json"
-if [[ -f "$lock" ]]; then
-  # Only the lockfile's own "name"/"version" pair, not dependency versions.
-  replace_version "$lock" "0,/\"version\": \"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\"/s//\"version\": \"$version\"/"
-fi
-
 win_node="/mnt/c/Program Files/nodejs/node.exe"
 win_npx_cli="/mnt/c/Program Files/nodejs/node_modules/npm/bin/npx-cli.js"
 if [[ -f "$win_node" && -f "$win_npx_cli" ]]; then
@@ -95,14 +80,17 @@ else
   exit 0
 fi
 
-vsix="$root/vscode/allen6297-$version.vsix"
+vsix="$root/vscode/rosegold-language-$version.vsix"
 if [[ ! -f "$vsix" ]]; then
-  echo "missing $vsix" >&2
+  vsix="$(ls -t "$root/vscode"/rosegold-language-*.vsix 2>/dev/null | head -n1 || true)"
+fi
+if [[ -z "${vsix:-}" || ! -f "$vsix" ]]; then
+  echo "missing $root/vscode/rosegold-language-$version.vsix" >&2
   exit 1
 fi
 
 vsix_win="$(wslpath -w "$vsix" | tr -d '\r')"
-cursor_cmd="/mnt/c/Users/monki/AppData/Local/Programs/cursor/resources/app/bin/cursor.cmd"
+cursor_cmd=""
 if [[ -n "${win_home:-}" && -f "$win_home/AppData/Local/Programs/cursor/resources/app/bin/cursor.cmd" ]]; then
   cursor_cmd="$win_home/AppData/Local/Programs/cursor/resources/app/bin/cursor.cmd"
 fi

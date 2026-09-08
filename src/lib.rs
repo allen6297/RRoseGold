@@ -1,8 +1,9 @@
-//! RoseGold: lexer, parser, typecheck, and tree-walking interpreter.
+//! RoseGold: lexer, parser, typecheck, tree-walking interpreter, and a stack VM.
 //!
 //! Use [`compile_source`] / [`run_source`] / [`EvalContext`]. Editor metadata
 //! lives in [`signal`] and [`navigate`].
 
+pub mod bytecode;
 pub mod format;
 pub mod interpreter;
 pub mod lexer;
@@ -429,6 +430,12 @@ fn run_with_context(source: &str, ctx: &mut EvalContext) -> RunResult {
             .next()
         {
             return RunResult::fail(typecheck_error_message(&d));
+        }
+        let compiled = crate::bytecode::compile_program_with(&program, Some(&*r));
+        drop(r);
+        if let Ok(proto) = compiled {
+            let result = crate::bytecode::interpret_in(ctx, &proto, Vec::new());
+            return RunResult::from_eval(ctx, result);
         }
     }
     let result = ctx.run(&program);

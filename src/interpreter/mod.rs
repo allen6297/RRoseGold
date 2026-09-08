@@ -2,7 +2,7 @@
 
 mod dispatch;
 mod eval;
-mod ops;
+pub(crate) mod ops;
 mod resolver;
 mod ui_host;
 mod value;

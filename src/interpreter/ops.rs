@@ -1,11 +1,14 @@
 //! Runtime helpers: arithmetic, bitwise ops, equality, formatting, and host I/O.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use crate::parser::AssignOp;
 use crate::{RuntimeError, Span};
 
 use super::value::*;
 
-pub(super) fn runtime_err(message: impl Into<String>, span: Span) -> RuntimeError {
+pub(crate) fn runtime_err(message: impl Into<String>, span: Span) -> RuntimeError {
     RuntimeError {
         message: message.into(),
         span,
@@ -25,7 +28,7 @@ pub(super) fn exit_err(code: i32, span: Span) -> RuntimeError {
     }
 }
 
-pub(super) fn attach_trace(
+pub(crate) fn attach_trace(
     mut err: RuntimeError,
     name: &str,
     span: Span,
@@ -43,7 +46,7 @@ pub(super) fn attach_trace(
 }
 
 /// Label used in traces: `helpers.rg` from a path or in-memory module key.
-pub(super) fn file_label(key: &str) -> String {
+pub(crate) fn file_label(key: &str) -> String {
     let name = std::path::Path::new(key)
         .file_name()
         .and_then(|n| n.to_str())
@@ -63,7 +66,7 @@ pub(super) fn as_f64(value: &Value) -> Option<f64> {
     }
 }
 
-pub(super) fn value_eq(a: &Value, b: &Value) -> bool {
+pub(crate) fn value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Float(a), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
@@ -118,7 +121,7 @@ pub(super) fn value_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-pub(super) fn format_value(
+pub(crate) fn format_value(
     value: &Value,
     format: Option<&str>,
     span: Span,
@@ -152,7 +155,7 @@ pub(super) fn format_value(
     Ok(value.to_string())
 }
 
-pub(super) fn int_bitwise<F: FnOnce(i64, i64) -> i64>(
+pub(crate) fn int_bitwise<F: FnOnce(i64, i64) -> i64>(
     l: Value,
     r: Value,
     op: F,
@@ -171,7 +174,7 @@ pub(super) fn int_bitwise<F: FnOnce(i64, i64) -> i64>(
     }
 }
 
-pub(super) fn int_shift(l: Value, r: Value, left: bool, span: Span) -> Result<Value, RuntimeError> {
+pub(crate) fn int_shift(l: Value, r: Value, left: bool, span: Span) -> Result<Value, RuntimeError> {
     match (l, r) {
         (Value::Int(a), Value::Int(b)) => {
             if b < 0 || b >= 64 {
@@ -198,11 +201,254 @@ pub(super) fn int_shift(l: Value, r: Value, left: bool, span: Span) -> Result<Va
     }
 }
 
-pub(super) fn string_char_len(s: &str) -> i64 {
+pub(crate) fn string_char_len(s: &str) -> i64 {
     s.chars().count() as i64
 }
 
-pub(super) fn int_div(a: i64, b: i64, span: Span) -> Result<Value, RuntimeError> {
+pub(crate) fn member_get(obj: &Value, name: &str, span: Span) -> Result<Value, RuntimeError> {
+    match obj {
+        Value::String(s) => match name {
+            "len" => Ok(Value::Int(string_char_len(s))),
+            _ => Err(runtime_err(
+                format!("String has no member '{}'", name),
+                span,
+            )),
+        },
+        Value::Array(a) => match name {
+            "len" => Ok(Value::Int(lock(a).len() as i64)),
+            _ => Err(runtime_err(format!("Array has no member '{}'", name), span)),
+        },
+        Value::Bytes(b) => match name {
+            "len" => Ok(Value::Int(b.len() as i64)),
+            _ => Err(runtime_err(format!("Bytes has no member '{}'", name), span)),
+        },
+        Value::Map(m) => match name {
+            "len" => Ok(Value::Int(lock(m).len() as i64)),
+            _ => Err(runtime_err(format!("Map has no member '{}'", name), span)),
+        },
+        Value::Struct {
+            name: struct_name,
+            fields,
+        } => {
+            if let Some(v) = lock(fields).get(name) {
+                return Ok(v.clone());
+            }
+            Err(runtime_err(
+                format!("struct {} has no field '{}'", struct_name, name),
+                span,
+            ))
+        }
+        Value::EnumType(e) => {
+            if let Some(v) = e.variants.get(name) {
+                if v.arity == 0 {
+                    return Ok(Value::Enum {
+                        module: e.name.clone(),
+                        variant: name.to_string(),
+                        value: None,
+                    });
+                }
+                return Err(runtime_err(
+                    format!(
+                        "{}.{} is a constructor and must be called with an argument",
+                        e.name, name
+                    ),
+                    span,
+                ));
+            }
+            Err(runtime_err(
+                format!("enum {} has no variant '{}'", e.name, name),
+                span,
+            ))
+        }
+        _ => Err(runtime_err(
+            format!("type {} has no member '{}'", obj.type_name(), name),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn member_set(
+    obj: &Value,
+    name: &str,
+    val: Value,
+    span: Span,
+) -> Result<(), RuntimeError> {
+    match obj {
+        Value::Struct { fields, .. } => {
+            lock(fields).insert(name.to_string(), val);
+            Ok(())
+        }
+        other => Err(runtime_err(
+            format!("cannot assign field on {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn new_struct(def: &StructDef) -> Value {
+    let mut fields = HashMap::new();
+    for f in &def.fields {
+        fields.insert(f.clone(), Value::None);
+    }
+    Value::Struct {
+        name: def.name.clone(),
+        fields: Arc::new(Mutex::new(fields)),
+    }
+}
+
+/// `Ok(None)` means unwrap to `payload`. `Ok(Some(err))` means return that `Err`.
+pub(crate) fn try_result(value: Value, span: Span) -> Result<Result<Value, Value>, RuntimeError> {
+    let (module, variant, payload) = match &value {
+        Value::Enum {
+            module,
+            variant,
+            value: payload,
+        } => (module.as_str(), variant.as_str(), payload.as_deref()),
+        other => {
+            return Err(runtime_err(
+                format!("? expects Result, got {}", other.type_name()),
+                span,
+            ));
+        }
+    };
+    if module != "Result" {
+        return Err(runtime_err(format!("? expects Result, got {module}"), span));
+    }
+    if variant == "Ok" {
+        Ok(Ok(payload.cloned().unwrap_or(Value::Void)))
+    } else {
+        Ok(Err(value))
+    }
+}
+
+pub(crate) fn is_variant(value: &Value, name: &str, span: Span) -> Result<bool, RuntimeError> {
+    match value {
+        Value::Enum { variant, .. } => Ok(variant == name),
+        other => Err(runtime_err(
+            format!(
+                "match pattern '{}' does not match value of type {}",
+                name,
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn enum_payload(value: Value, span: Span) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Enum {
+            value: Some(inner), ..
+        } => Ok(*inner),
+        Value::Enum { value: None, .. } => Ok(Value::Void),
+        other => Err(runtime_err(
+            format!("expected enum, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn local_get(slot: &Value) -> Value {
+    match slot {
+        Value::Upvalue(u) => lock(u).clone(),
+        v => v.clone(),
+    }
+}
+
+pub(crate) fn local_set(slot: &mut Value, v: Value) {
+    if let Value::Upvalue(u) = slot {
+        *lock(u) = v;
+    } else {
+        *slot = v;
+    }
+}
+
+pub(crate) fn box_local(slot: &mut Value) -> Value {
+    if matches!(slot, Value::Upvalue(_)) {
+        slot.clone()
+    } else {
+        let inner = std::mem::replace(slot, Value::None);
+        let boxed = Value::Upvalue(Arc::new(Mutex::new(inner)));
+        *slot = boxed.clone();
+        boxed
+    }
+}
+
+pub(crate) fn named_payload_field(
+    value: &Value,
+    field: &str,
+    enums: &HashMap<String, Arc<EnumDef>>,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    let (module, variant, inner) = match value {
+        Value::Enum {
+            module,
+            variant,
+            value,
+        } => (module.as_str(), variant.as_str(), value.as_deref()),
+        other => {
+            return Err(runtime_err(
+                format!("expected enum, got {}", other.type_name()),
+                span,
+            ));
+        }
+    };
+    let field_names = enums
+        .get(module)
+        .and_then(|e| e.variants.get(variant))
+        .map(|def| def.field_names.clone())
+        .unwrap_or_default();
+    if field_names.iter().all(|n| n.is_empty()) {
+        return Err(runtime_err(
+            format!("{module}.{variant} has no named payload fields"),
+            span,
+        ));
+    }
+    let Some(i) = field_names.iter().position(|n| n == field) else {
+        return Err(runtime_err(
+            format!("{module}.{variant} has no field '{field}'"),
+            span,
+        ));
+    };
+    let parts: Vec<Value> = match inner {
+        Some(Value::Array(a)) => lock(a).clone(),
+        Some(other) => vec![other.clone()],
+        None => Vec::new(),
+    };
+    parts.get(i).cloned().ok_or_else(|| {
+        runtime_err(
+            format!("{module}.{variant} field '{field}' is missing"),
+            span,
+        )
+    })
+}
+
+pub(crate) fn await_task(value: Value, span: Span) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Task(handle) => {
+            let rx = lock(&handle.rx)
+                .take()
+                .ok_or_else(|| runtime_err("task already awaited", span))?;
+            match rx.recv() {
+                Ok(Ok(v)) => Ok(v),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(runtime_err("task ended without a result", span)),
+            }
+        }
+        other => Err(runtime_err(
+            format!("await expects Task, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn task_from_rx(rx: std::sync::mpsc::Receiver<Result<Value, RuntimeError>>) -> Value {
+    Value::Task(TaskHandle {
+        rx: Arc::new(Mutex::new(Some(rx))),
+    })
+}
+
+pub(crate) fn int_div(a: i64, b: i64, span: Span) -> Result<Value, RuntimeError> {
     if b == 0 {
         Err(runtime_err("division by zero".to_string(), span))
     } else {
@@ -218,14 +464,14 @@ pub(super) fn is_numeric_zero(v: &Value) -> bool {
     }
 }
 
-pub(super) fn checked_mod(l: Value, r: Value, span: Span) -> Result<Value, RuntimeError> {
+pub(crate) fn checked_mod(l: Value, r: Value, span: Span) -> Result<Value, RuntimeError> {
     if is_numeric_zero(&r) {
         return Err(runtime_err("division by zero".to_string(), span));
     }
     numeric_binop(l, r, |a, b| a % b, span)
 }
 
-pub(super) fn numeric_binop<F: FnOnce(f64, f64) -> f64>(
+pub(crate) fn numeric_binop<F: FnOnce(f64, f64) -> f64>(
     l: Value,
     r: Value,
     op: F,
@@ -252,7 +498,7 @@ pub(super) fn to_float(v: &Value, span: Span) -> Result<f64, RuntimeError> {
     }
 }
 
-pub(super) fn compare_op<F: FnOnce(f64, f64) -> bool>(
+pub(crate) fn compare_op<F: FnOnce(f64, f64) -> bool>(
     l: Value,
     r: Value,
     op: F,
@@ -263,7 +509,7 @@ pub(super) fn compare_op<F: FnOnce(f64, f64) -> bool>(
     Ok(Value::Bool(op(a, b)))
 }
 
-pub(super) fn apply_assign_op(
+pub(crate) fn apply_assign_op(
     old: Value,
     new: &Value,
     op: &AssignOp,
@@ -282,7 +528,148 @@ pub(super) fn apply_assign_op(
     }
 }
 
-/// Start time for `time.elapsed` (this VM, not frame `dt`).
+pub(crate) fn index_get(obj: &Value, idx: &Value, span: Span) -> Result<Value, RuntimeError> {
+    match (obj, idx) {
+        (Value::Array(a), Value::Int(n)) => {
+            let i = *n as usize;
+            lock(a)
+                .get(i)
+                .cloned()
+                .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
+        }
+        (Value::Bytes(b), Value::Int(n)) => {
+            let i = *n as usize;
+            b.get(i)
+                .map(|n| Value::Int(*n as i64))
+                .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
+        }
+        (Value::String(s), Value::Int(n)) => {
+            let i = *n as usize;
+            s.chars()
+                .nth(i)
+                .map(|c| Value::String(c.to_string()))
+                .ok_or_else(|| runtime_err(format!("index {} out of bounds", i), span))
+        }
+        (Value::Map(m), Value::String(k)) => lock(m)
+            .get(k)
+            .cloned()
+            .ok_or_else(|| runtime_err(format!("key '{k}' not found"), span)),
+        _ => Err(runtime_err(
+            format!("cannot index {} with {}", obj.type_name(), idx.type_name()),
+            span,
+        )),
+    }
+}
+
+/// Old value for `a[i] += 1`. Missing map keys are `none`; arrays still bound-check.
+pub(crate) fn index_get_assign(
+    obj: &Value,
+    idx: &Value,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    match obj {
+        Value::Array(_) => index_get(obj, idx, span),
+        Value::Map(m) => {
+            let k = match idx {
+                Value::String(s) => s,
+                _ => return Err(runtime_err("map key must be String".to_string(), span)),
+            };
+            Ok(lock(m).get(k).cloned().unwrap_or(Value::None))
+        }
+        _ => Err(runtime_err(
+            format!("cannot assign to {}", obj.type_name()),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn index_set(
+    obj: &Value,
+    idx: &Value,
+    value: Value,
+    span: Span,
+) -> Result<(), RuntimeError> {
+    match obj {
+        Value::Array(a) => {
+            let i = match idx {
+                Value::Int(n) => *n as usize,
+                _ => return Err(runtime_err("array index must be Int".to_string(), span)),
+            };
+            let mut arr = lock(a);
+            if i < arr.len() {
+                arr[i] = value;
+                Ok(())
+            } else {
+                Err(runtime_err("index out of bounds".to_string(), span))
+            }
+        }
+        Value::Map(m) => {
+            let k = match idx {
+                Value::String(s) => s.clone(),
+                _ => return Err(runtime_err("map key must be String".to_string(), span)),
+            };
+            lock(m).insert(k, value);
+            Ok(())
+        }
+        _ => Err(runtime_err(
+            format!("cannot assign to {}", obj.type_name()),
+            span,
+        )),
+    }
+}
+
+pub(crate) fn range_value(
+    start: Value,
+    end: Value,
+    inclusive: bool,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    let s = match start {
+        Value::Int(n) => n,
+        Value::Float(n) => n as i64,
+        v => {
+            return Err(runtime_err(
+                format!("range start must be Int, got {}", v.type_name()),
+                span,
+            ));
+        }
+    };
+    let e = match end {
+        Value::Int(n) => n,
+        Value::Float(n) => n as i64,
+        v => {
+            return Err(runtime_err(
+                format!("range end must be Int, got {}", v.type_name()),
+                span,
+            ));
+        }
+    };
+    Ok(Value::Range(s, e, inclusive))
+}
+
+pub(crate) fn iter_items(iter: Value, span: Span) -> Result<Value, RuntimeError> {
+    let items = match iter {
+        Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
+        Value::Array(a) => lock(&a).iter().cloned().collect(),
+        Value::Bytes(b) => b.iter().map(|n| Value::Int(*n as i64)).collect(),
+        Value::Map(m) => lock(&m).keys().map(|k| Value::String(k.clone())).collect(),
+        Value::Int(n) => (0..n).map(Value::Int).collect(),
+        Value::Range(start, end, inclusive) => {
+            if inclusive {
+                (start..=end).map(Value::Int).collect()
+            } else {
+                (start..end).map(Value::Int).collect()
+            }
+        }
+        other => {
+            return Err(runtime_err(
+                format!("cannot iterate over {}", other.type_name()),
+                span,
+            ));
+        }
+    };
+    Ok(array_value(items))
+}
 #[derive(Clone, Copy)]
 pub(super) struct Clock {
     #[cfg(not(target_arch = "wasm32"))]

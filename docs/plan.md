@@ -222,11 +222,11 @@ import util;
 
 The library repo is ordinary RoseGold (`lib.rg` + `rg.toml`).
 
-## 8. Runtime: stay on the tree-walker
+## 8. Runtime: stack VM, tree-walk as fallback
 
-RoseGold executes by walking the AST (`src/interpreter/`). Comments that say “VM” mean this process’s `EvalContext` (for example `time.elapsed()`). Do not add bytecode, a JIT, or a register machine while the language is still moving.
+`rosegold run` typechecks, then compiles to a stack chunk in `src/bytecode/` and interprets it. Compile failure (limits, unknown names, private types) falls back to the AST walker. The REPL still tree-walks. Comments that say “VM” on hosts still mean this process’s `EvalContext` (for example `time.elapsed()`).
 
-Bytecode is the program as a compact instruction list (`LOAD_CONST 1; LOAD_CONST 2; ADD`) instead of `Expr` nodes. A **stack** VM is the right first backend if we ever compile (after typecheck: emit a chunk, interpret it). A **register** VM comes after that instruction set is boring. **JIT** is last and only if the interpreter is the measured bottleneck.
+A **register** VM comes after this instruction set is boring. **JIT** is last and only if the interpreter is the measured bottleneck. Bytecode is not a language version.
 
 It helps **large runs** (hot loops), not **large codebases** (`check` / hover still need the AST). Cached on-disk bytecode can help startup; compiling on every `rosegold run` can be slower. Host-bound scripts (`io` / `json`) barely care.
 
@@ -239,7 +239,7 @@ If something feels slow before that, fix **values** first: arrays/maps sit behin
 - Per-OS native UI (`win` / `app` / `gtk`).
 - SwiftUI-the-language (result builders, `@State`, `$binding`, `some View`).
 - Wrapping all of Win32 / AppKit / GTK.
-- Bytecode / JIT / register VM until the surface settles and something is actually slow.
+- JIT / register VM until this instruction set is boring and something is actually slow.
 - CSS, material, layout engine, or OS appearance sync in `ui` v1.
 - SQLite, MIDI, camera, Bluetooth, FFI / `dlopen` as language hosts.
 - Physics / ECS / scene graph in the crate — those are `.rg` libraries.
