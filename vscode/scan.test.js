@@ -111,3 +111,22 @@ test("self. on subclass inherits parent fields", () => {
   assert.ok(mem.fields.includes("current_health"));
   assert.ok(mem.methods.includes("shout"));
 });
+
+test("import binds last segment and alias, not from-import items", () => {
+  const src =
+    "import ui;\nimport util.helpers as h;\nfrom str import contains;\n";
+  assert.deepEqual(scan.importedModuleBinds(src).sort(), ["h", "ui"]);
+});
+
+test("module names color on import lines and before dots", () => {
+  const src =
+    "import ui;\nimport util.helpers as h;\nfrom str import contains;\nfn main(): Int {\n    ui.theme({});\n    h.n();\n    return ui.run();\n}\n";
+  const names = scan.moduleNameRanges(src).map((r) => src.slice(r.from, r.to));
+  assert.ok(names.includes("ui"));
+  assert.ok(names.includes("util"));
+  assert.ok(names.includes("helpers"));
+  assert.ok(names.includes("h"));
+  assert.ok(names.includes("str"));
+  assert.ok(!names.includes("contains"));
+  assert.ok(names.filter((n) => n === "ui").length >= 3);
+});

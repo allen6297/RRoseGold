@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "RoseGold scripting language: lexer, parser, typecheck, and interpreter"
 license = "MIT"
-repository = "https://github.com/allen6297/RRoseGold"
+repository = "https://github.com/allen6297/RoseGold"
 
 [lib]
 name = "rosegold"
@@ -22,3 +22,4 @@ serde_json = "1"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = "2.12"
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts"] }
+rfd = "0.15"

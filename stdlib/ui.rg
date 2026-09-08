@@ -2,6 +2,7 @@
 # Theme maps and v1 modifiers stay here (handles are `Widget` instances).
 
 pub mod ui {
+    ## Built-in Widgets, containers, and primitives.
     pub class Widget {
         var kind: String = "";
         var label: String = "";
@@ -52,6 +53,14 @@ pub mod ui {
         __ui.alert(msg);
     }
 
+    pub fn open(): Option {
+        return __ui.open();
+    }
+
+    pub fn save(): Option {
+        return __ui.save();
+    }
+
     pub fn window(title: String, body: Fn): Widget {
         var h = Widget { kind: "window", label: title };
         __ui.window(h, body);
@@ -69,6 +78,15 @@ pub mod ui {
 
     pub fn row(body: Fn): Widget {
         var h = Widget { kind: "row" };
+        __ui.widget(h);
+        __ui.begin(h);
+        body();
+        __ui.end();
+        return h;
+    }
+
+    pub fn scroll(body: Fn): Widget {
+        var h = Widget { kind: "scroll" };
         __ui.widget(h);
         __ui.begin(h);
         body();
@@ -106,6 +124,26 @@ pub mod ui {
         h.style["min"] = min;
         h.style["max"] = max;
         return __ui.slider(h);
+    }
+
+    pub fn select(options: Array, current: String): String {
+        var h = Widget { kind: "select", label: current };
+        h.style["options"] = options;
+        return __ui.select(h);
+    }
+
+    pub fn progress(t: Float): Widget {
+        var v = t;
+        if v < 0.0 {
+            v = 0.0;
+        }
+        if v > 1.0 {
+            v = 1.0;
+        }
+        var h = Widget { kind: "progress" };
+        h.style["value"] = v;
+        __ui.widget(h);
+        return h;
     }
 
     pub fn separator(): Widget {

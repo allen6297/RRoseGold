@@ -1,12 +1,12 @@
-# Publishing RoseGold (`allen6297.allen6297`)
+# Publishing RoseGold (`allen6297.rosegold-language`)
 
-The extension id is **`allen6297.allen6297`**: `package.json` `publisher` + `name`.
+The extension id is **`allen6297.rosegold-language`**: `package.json` `publisher` + `name`. Display name is **RoseGold Language**.
 
 - **VS Code search** = Visual Studio Marketplace (`vsce`)
 - **Cursor search** = Open VSX (`ovsx`); Cursor mirrors Open VSX, often hours later
 - Sideload still works: `install.ps1` / `install.sh`
 
-Do not put PATs in files or git. Use env vars or `vsce login` / `ovsx login`.
+Do not put PATs in files or git. Use env vars or `vsce login` / `ovsx login`. The name `rosegold` is reserved on the Marketplace if you deleted that listing; do not reuse it.
 
 ## 0. Package locally
 
@@ -16,7 +16,7 @@ From `vscode/` (Node on PATH, or `C:\Program Files\nodejs`):
 npm run package
 ```
 
-That writes `allen6297-<version>.vsix` (version from `package.json`). Fix any `vsce` errors before publishing.
+That writes `rosegold-language-<version>.vsix` in this folder (from `package.json` `name`). Fix any `vsce` errors before publishing.
 
 Helper (packages, then publishes only if tokens are in the environment):
 
@@ -60,7 +60,7 @@ npx --yes @vscode/vsce publish
 
 Live listing (after a successful publish):
 
-`https://marketplace.visualstudio.com/items?itemName=allen6297.allen6297`
+`https://marketplace.visualstudio.com/items?itemName=allen6297.rosegold-language`
 
 ## 2. Open VSX (Cursor)
 
@@ -80,7 +80,7 @@ If the namespace already exists and you own it, skip `create-namespace`. Exclusi
 
 Live listing:
 
-`https://open-vsx.org/extension/allen6297/allen6297`
+`https://open-vsx.org/extension/allen6297/rosegold-language`
 
 Cursor’s extension search can lag **hours** behind Open VSX. Sideload with `install.ps1` if you need it immediately.
 

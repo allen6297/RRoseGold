@@ -209,9 +209,8 @@ pub fn parse_rg_toml(text: &str) -> Result<RgToml, String> {
         if line.is_empty() {
             continue;
         }
-        let (key, value) = split_toml_kv(line).ok_or_else(|| {
-            format!("rg.toml line {}: expected `key = value`, got {line}", i + 1)
-        })?;
+        let (key, value) = split_toml_kv(line)
+            .ok_or_else(|| format!("rg.toml line {}: expected `key = value`, got {line}", i + 1))?;
         match key {
             "name" => {
                 let n = parse_toml_string(value)?;
@@ -454,7 +453,9 @@ fn check_declared_files(dest: &Path, name: &str, files: &[String]) -> Result<(),
         }
         let path = Path::new(rel);
         if path.is_absolute() || rel.split(['/', '\\']).any(|p| p == "..") {
-            return Err(format!("rg.toml files entry '{rel}' is not a project-relative path"));
+            return Err(format!(
+                "rg.toml files entry '{rel}' is not a project-relative path"
+            ));
         }
         if !dest.join(path).is_file() {
             missing.push(rel.to_string());

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
-version="26.0.0"
+version="26.0.1"
 cd "$root"
 
 # WSL does not see Windows `cargo` as `cargo` — it's `cargo.exe` under the Windows home.

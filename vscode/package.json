@@ -1,8 +1,8 @@
 {
-  "name": "allen6297",
-  "displayName": "RoseGold",
+  "name": "rosegold-language",
+  "displayName": "RoseGold Language",
   "description": "Language support for the RoseGold programming language",
-  "version": "26.0.0",
+  "version": "26.0.1",
   "publisher": "allen6297",
   "license": "MIT",
   "icon": "icons/rosegold.png",
@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/allen6297/RRoseGold.git"
+    "url": "https://github.com/allen6297/RoseGold.git"
   },
   "bugs": {
-    "url": "https://github.com/allen6297/RRoseGold/issues"
+    "url": "https://github.com/allen6297/RoseGold/issues"
   },
-  "homepage": "https://github.com/allen6297/RRoseGold#readme",
+  "homepage": "https://github.com/allen6297/RoseGold#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -58,6 +58,14 @@
         "language": "rosegold",
         "scopeName": "source.rosegold",
         "path": "./syntaxes/rosegold.tmLanguage.json"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "rosegold",
+        "scopes": {
+          "namespace": ["entity.name.namespace.rosegold"]
+        }
       }
     ],
     "snippets": [
@@ -181,6 +189,13 @@
       }
     },
     "configurationDefaults": {
+      "[rosegold]": {
+        "editor.semanticTokenColorCustomizations": {
+          "rules": {
+            "namespace": "#5EEAD4"
+          }
+        }
+      },
       "editor.tokenColorCustomizations": {
         "textMateRules": [
           {
@@ -220,9 +235,22 @@
             }
           },
           {
-            "scope": "keyword.control.rosegold",
+            "scope": [
+              "keyword.control.rosegold",
+              "keyword.control.import.rosegold"
+            ],
             "settings": {
               "foreground": "#C4B5FD"
+            }
+          },
+          {
+            "scope": [
+              "entity.name.namespace.rosegold",
+              "variable.other.import.rosegold",
+              "support.module.rosegold"
+            ],
+            "settings": {
+              "foreground": "#5EEAD4"
             }
           },
           {

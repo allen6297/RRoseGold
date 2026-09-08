@@ -21,12 +21,16 @@ pub(crate) struct UiState {
     quit: bool,
     invalidate: bool,
     dirty: bool,
+    /// True only while `ui.run()` owns the native event loop.
+    running: bool,
     /// Values returned to the script last pump (`pass current`).
     input_out: Vec<Value>,
     /// Values painted last frame (`get next`).
     input_in: Vec<Value>,
     input_cursor: usize,
     paint_cursor: usize,
+    /// Stable egui ids for immediate-mode widgets (Arc handle ptrs change every frame).
+    egui_salt: usize,
 }
 
 struct UiWindow {
@@ -48,10 +52,12 @@ impl UiState {
             quit: false,
             invalidate: false,
             dirty: false,
+            running: false,
             input_out: Vec::new(),
             input_in: Vec::new(),
             input_cursor: 0,
             paint_cursor: 0,
+            egui_salt: 0,
         }
     }
 
@@ -87,6 +93,12 @@ impl UiState {
         if changed {
             self.dirty = true;
         }
+    }
+
+    fn next_egui_salt(&mut self) -> u64 {
+        let i = self.egui_salt;
+        self.egui_salt += 1;
+        i as u64
     }
 }
 
@@ -155,6 +167,41 @@ fn style_float(handle: &Value, key: &str) -> f64 {
 
 fn slider_range(min: f64, max: f64) -> (f64, f64) {
     if min <= max { (min, max) } else { (max, min) }
+}
+
+fn style_strings(handle: &Value, key: &str) -> Vec<String> {
+    match style_map(handle).get(key) {
+        Some(Value::Array(a)) => lock(a)
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_file_path(save: bool) -> Value {
+    #[cfg(test)]
+    {
+        let _ = save;
+        option_none()
+    }
+    #[cfg(not(test))]
+    {
+        let dialog = rfd::FileDialog::new();
+        let picked = if save {
+            dialog.save_file()
+        } else {
+            dialog.pick_file()
+        };
+        match picked {
+            Some(p) => option_some(Value::String(p.to_string_lossy().into_owned())),
+            None => option_none(),
+        }
+    }
 }
 
 impl EvalContext {
@@ -314,6 +361,39 @@ impl EvalContext {
                 set_style_entry(&args[0], "value", next.clone());
                 Ok(next)
             }
+            "select" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("__ui.select takes 1 argument", span));
+                }
+                if handle_id(&args[0]).is_none() {
+                    return Err(runtime_err("__ui.select expects a widget handle", span));
+                }
+                let current = field_str(&args[0], "label");
+                let next = self.data_mut(|d| {
+                    d.ui.push_child(args[0].clone());
+                    d.ui.take_input(Value::String(current))
+                });
+                set_field(&args[0], "label", next.clone());
+                Ok(next)
+            }
+            "open" => {
+                if !args.is_empty() {
+                    return Err(runtime_err("__ui.open takes 0 arguments", span));
+                }
+                if !self.data(|d| d.ui.running) {
+                    return Ok(option_none());
+                }
+                Ok(native_file_path(false))
+            }
+            "save" => {
+                if !args.is_empty() {
+                    return Err(runtime_err("__ui.save takes 0 arguments", span));
+                }
+                if !self.data(|d| d.ui.running) {
+                    return Ok(option_none());
+                }
+                Ok(native_file_path(true))
+            }
             "quit" => {
                 if !args.is_empty() {
                     return Err(runtime_err("__ui.quit takes 0 arguments", span));
@@ -411,13 +491,13 @@ mod native {
     use std::ptr::NonNull;
 
     use eframe::egui::{
-        self, Button, CentralPanel, Color32, Context, Frame, Modal, RichText, Slider, TextEdit,
-        ViewportCommand, Window,
+        self, Button, CentralPanel, Color32, ComboBox, Context, Frame, Modal, ProgressBar,
+        RichText, ScrollArea, Slider, TextEdit, ViewportCommand, Window,
     };
 
     use crate::{RuntimeError, Span};
 
-    use super::{EvalContext, Value, field_str, handle_id, runtime_err, style_map};
+    use super::{EvalContext, Value, field_str, handle_id, runtime_err, style_map, style_strings};
 
     thread_local! {
         static UI_EVAL: Cell<Option<NonNull<EvalContext>>> = const { Cell::new(None) };
@@ -459,6 +539,7 @@ mod native {
                 .unwrap_or_else(|| "RoseGold".to_string())
         });
 
+        ctx.data_mut(|d| d.ui.running = true);
         let ptr = NonNull::from(&mut *ctx);
         UI_EVAL.with(|c| c.set(Some(ptr)));
         let result = catch_unwind(AssertUnwindSafe(|| {
@@ -469,6 +550,7 @@ mod native {
             )
         }));
         UI_EVAL.with(|c| c.set(None));
+        ctx.data_mut(|d| d.ui.running = false);
 
         match result {
             Ok(Ok(())) => {
@@ -514,7 +596,10 @@ mod native {
         let theme = eval.data(|d| d.ui.theme.clone());
         apply_theme(ui.ctx(), &theme);
         eval.ui_pump(span)?;
-        eval.data_mut(|d| d.ui.paint_cursor = 0);
+        eval.data_mut(|d| {
+            d.ui.paint_cursor = 0;
+            d.ui.egui_salt = 0;
+        });
 
         let windows = eval.data(|d| {
             d.ui.windows
@@ -630,6 +715,30 @@ mod native {
                         }
                     });
                 }
+                "scroll" => {
+                    let kids = id
+                        .and_then(|id| eval.data(|d| d.ui.children.get(&id).cloned()))
+                        .unwrap_or_default();
+                    let width = map_number(&style, "width").unwrap_or_else(|| ui.available_width());
+                    let height = map_number(&style, "height")
+                        .unwrap_or_else(|| ui.available_height().max(64.0));
+                    let salt = eval.data_mut(|d| d.ui.next_egui_salt());
+                    ui.allocate_ui(egui::vec2(width, height), |ui| {
+                        Frame::canvas(ui.style()).show(ui, |ui| {
+                            ScrollArea::vertical()
+                                .id_salt(("rg_scroll", salt))
+                                .auto_shrink([false, false])
+                                .max_height(ui.available_height())
+                                .show(ui, |ui| {
+                                    ui.vertical(|ui| {
+                                        for child in &kids {
+                                            paint_node(eval, ui, child);
+                                        }
+                                    });
+                                });
+                        });
+                    });
+                }
                 "button" => {
                     let label = styled_text(field_str(handle, "label"), &style);
                     let mut btn = Button::new(label);
@@ -677,6 +786,39 @@ mod native {
                     let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
                     let changed = ui.add(Slider::new(&mut value, lo..=hi)).changed();
                     eval.data_mut(|d| d.ui.store_painted(Value::Float(value as f64), changed));
+                }
+                "select" => {
+                    let mut selected = field_str(handle, "label");
+                    let options = style_strings(handle, "options");
+                    let idx = eval.data(|d| d.ui.paint_cursor);
+                    let mut combo =
+                        ComboBox::from_id_salt(("rg_select", idx)).selected_text(selected.clone());
+                    if let Some(w) = map_number(&style, "width") {
+                        combo = combo.width(w);
+                    }
+                    let before = selected.clone();
+                    combo.show_ui(ui, |ui| {
+                        for opt in &options {
+                            ui.selectable_value(&mut selected, opt.clone(), opt.as_str());
+                        }
+                    });
+                    let changed = selected != before;
+                    eval.data_mut(|d| d.ui.store_painted(Value::String(selected), changed));
+                }
+                "progress" => {
+                    let t = map_number(&style, "value").unwrap_or(0.0).clamp(0.0, 1.0);
+                    let mut bar = ProgressBar::new(t).show_percentage();
+                    if let Some(c) = map_color(&style, "color").or_else(|| map_color(&style, "bg"))
+                    {
+                        bar = bar.fill(c);
+                    }
+                    if let Some(w) = map_number(&style, "width") {
+                        bar = bar.desired_width(w);
+                    }
+                    if let Some(h) = map_number(&style, "height") {
+                        bar = bar.desired_height(h);
+                    }
+                    ui.add(bar);
                 }
                 "separator" => {
                     ui.separator();
@@ -767,6 +909,21 @@ mod native {
             );
             assert_eq!(parse_hex("#f2e"), Some(Color32::from_rgb(0xff, 0x22, 0xee)));
             assert_eq!(parse_hex("c45c26"), None);
+        }
+
+        #[test]
+        fn native_file_path_skips_dialog_in_tests() {
+            fn is_none(v: &Value) -> bool {
+                matches!(
+                    v,
+                    Value::Enum {
+                        variant,
+                        ..
+                    } if variant == "None"
+                )
+            }
+            assert!(is_none(&super::super::native_file_path(false)));
+            assert!(is_none(&super::super::native_file_path(true)));
         }
     }
 }

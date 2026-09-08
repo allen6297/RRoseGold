@@ -47,9 +47,9 @@ pub(super) fn host_return_type(module: &str, name: &str) -> Option<&'static str>
         }
         ("__ui", "quit" | "invalidate") => "Void",
         ("__ui", "theme_get") => "Map",
-        ("__ui", "last_alert") => "Option",
+        ("__ui", "last_alert" | "open" | "save") => "Option",
         ("__ui", "run") => "Int",
-        ("__ui", "field") => "String",
+        ("__ui", "field" | "select") => "String",
         ("__ui", "checkbox") => "Bool",
         ("__ui", "slider") => "Float",
         _ => return None,
@@ -89,9 +89,16 @@ pub fn stdlib_arity(module: &str, name: &str) -> Option<usize> {
         ("__str", "contains" | "starts_with" | "ends_with" | "repeat" | "split") => 2,
         ("__str", "length" | "is_empty" | "upper" | "lower" | "trim") => 1,
         ("__str", "slice") => 3,
-        ("__ui", "theme" | "alert" | "begin" | "widget" | "field" | "checkbox" | "slider") => 1,
+        (
+            "__ui",
+            "theme" | "alert" | "begin" | "widget" | "field" | "checkbox" | "slider" | "select",
+        ) => 1,
         ("__ui", "window" | "bind") => 2,
-        ("__ui", "end" | "run" | "pump" | "last_alert" | "theme_get" | "quit" | "invalidate") => 0,
+        (
+            "__ui",
+            "end" | "run" | "pump" | "last_alert" | "theme_get" | "quit" | "invalidate" | "open"
+            | "save",
+        ) => 0,
         ("Array", "first" | "last") => 1,
         ("Array", "contains") => 2,
         _ => return None,

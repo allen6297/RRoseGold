@@ -4494,6 +4494,11 @@ fn main(): Int {
     ui.field();
     ui.checkbox("x");
     ui.slider(0.0);
+    ui.select(["a"]);
+    ui.scroll();
+    ui.progress();
+    ui.open(1);
+    ui.save(1);
     ui.separator(1);
     ui.spacer(1);
     ui.quit(1);
@@ -4551,6 +4556,36 @@ fn main(): Int {
     assert!(
         diags
             .iter()
+            .any(|d| d.message.contains("ui.select") && d.message.contains("expected 2 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.scroll") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.progress") && d.message.contains("expected 1 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.open") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("ui.save") && d.message.contains("expected 0 args")),
+        "{diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
             .any(|d| d.message.contains("ui.row") && d.message.contains("expected 1 args")),
         "{diags:?}"
     );
@@ -4576,6 +4611,8 @@ fn main(): Int {
     var name = "hi";
     var on = false;
     var vol = 0.5;
+    var choice = "a";
+    var path = "";
     ui.window("Demo") {
         ui.column {
             ui.text("Hello");
@@ -4585,8 +4622,25 @@ fn main(): Int {
             };
             on = ui.checkbox("Loud", on);
             vol = ui.slider(vol, 0.0, 1.0);
+            choice = ui.select(["a", "b", "c"], choice);
+            ui.progress(0.4);
+            ui.scroll {
+                ui.text("long");
+            }.height(80);
             ui.separator();
             ui.spacer();
+            ui.button("Open") {
+                match ui.open() {
+                    Some(p) { path = p; }
+                    None {}
+                }
+            };
+            ui.button("Save") {
+                match ui.save() {
+                    Some(p) { path = p; }
+                    None {}
+                }
+            };
             ui.button("OK") { ui.alert("hi"); }
                 .padding(8)
                 .color("#c45c26")
@@ -4708,6 +4762,51 @@ fn main(): Int {
 "#,
     );
     assert_eq!(out.trim(), "hi\nfalse\n0.5");
+}
+
+#[test]
+fn ui_pump_later_widgets_headless() {
+    let out = assert_ok(
+        r#"
+import ui;
+fn main(): Int {
+    var choice = "a";
+    ui.window("Demo") {
+        choice = ui.select(["a", "b", "c"], choice);
+        ui.progress(0.4);
+        ui.progress(1.5);
+        ui.scroll {
+            ui.text("long");
+        };
+        ui.invalidate();
+    };
+    __ui.pump();
+    print(choice);
+    print(ui.progress(-0.2).style["value"]);
+    print(ui.progress(1.5).style["value"]);
+    print(ui.open().is_none());
+    print(ui.save().is_none());
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "a\n0\n1\ntrue\ntrue");
+}
+
+#[test]
+fn ui_scroll_size_modifiers_stick() {
+    let out = assert_ok(
+        r#"
+import ui;
+fn main(): Int {
+    var h = ui.scroll { ui.text("x"); }.width(180).height(90);
+    print(h.style["width"]);
+    print(h.style["height"]);
+    return 0;
+}
+"#,
+    );
+    assert_eq!(out.trim(), "180\n90");
 }
 
 fn vendor_temp(label: &str) -> PathBuf {
@@ -5006,15 +5105,11 @@ fn vendor_keeps_previous_version_on_collision() {
     let pin = crate::vendor::vendor_git(url, &project).expect("second");
     assert_eq!(pin.version.as_deref(), Some("0.2"));
 
-    let current = fs::read_to_string(project.join("vendor").join("httpclient").join("lib.rg")).unwrap();
+    let current =
+        fs::read_to_string(project.join("vendor").join("httpclient").join("lib.rg")).unwrap();
     assert!(current.contains("v2"), "{current}");
-    let old = fs::read_to_string(
-        project
-            .join("vendor")
-            .join("httpclient-0.1")
-            .join("lib.rg"),
-    )
-    .unwrap();
+    let old =
+        fs::read_to_string(project.join("vendor").join("httpclient-0.1").join("lib.rg")).unwrap();
     assert!(old.contains("v1"), "{old}");
 
     let lock = crate::vendor::read_lockfile(&project).unwrap();

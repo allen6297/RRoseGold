@@ -17,6 +17,7 @@ fn main(): Int {
     var name = "hi";
     var on = false;
     var vol = 0.5;
+    var choice = "a";
     ui.column {
         ui.text("Hello");
         ui.row {
@@ -25,13 +26,21 @@ fn main(): Int {
         };
         on = ui.checkbox("Loud", on);
         vol = ui.slider(vol, 0.0, 1.0);
+        choice = ui.select(["a", "b", "c"], choice);
+        ui.progress(0.4);
+        ui.scroll {
+            ui.text("long");
+        };
         ui.separator();
         ui.spacer();
     };
+    print(ui.open().is_none());
+    print(ui.save().is_none());
     ui.invalidate();
     print(ok.style["padding"]);
     print(name);
     print(on);
     print(vol);
+    print(choice);
     return 0;
 }

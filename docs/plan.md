@@ -11,8 +11,8 @@ Work for RoseGold that is not happening yet. Language and host APIs first; UI an
 5. ~~Generic `unwrap_or`, array `for`-in types, `?` on `Result`~~ — done
 6. ~~Remaining host modules (`path`, `http`, `regex`)~~ — done (`path.join`/`dirname`/`ext`, `http.get`/`post`, `regex.is_match`/`find`)
 7. ~~Concurrency polish~~ — done (`Channel.close`, recv-after-close `none`, `recv_timeout` / `Task.wait`)
-8. Ship the editor — VSIX sideload done (`vscode/install.ps1` / `install.sh`). Marketplace / Open VSX pending publisher login for **`allen6297.allen6297`**. See `vscode/PUBLISHING.md`.
-9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, row, field/checkbox/slider, separator/spacer, `quit`/`invalidate`, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered.
+8. Ship the editor — VSIX sideload done (`vscode/install.ps1` / `install.sh`). Marketplace / Open VSX: id **`allen6297.rosegold-language`**. See `vscode/PUBLISHING.md`.
+9. ~~Portable `ui`~~ — done (`import ui`: alert, window, button/text, row/scroll, field/checkbox/slider/select, progress, `open`/`save`, separator/spacer, `quit`/`invalidate`, `run()`, theme, v1 modifiers). `ui.run()` is native-only and opens a window; tests use theme/alert/handles/`__ui.pump()` and do not call `run()` when a window is registered. File dialogs return `none` during `pump()` / tests.
 10. ~~`rosegold vendor` when people share `.rg` files~~ — done (`vendor <git-url>`, lock-only `vendor`, `vendor remove`, `rg.toml`, collision folders `vendor/<name>-<version>/`)
 
 Bytecode / JIT only if something is actually slow after that.
@@ -122,10 +122,10 @@ v1 opens a window and takes a click. Tiny apps still need input, the other paren
 
 Later, still one call each:
 
-- **`ui.select(options, current)`** — list of strings → chosen string.
-- **`ui.scroll { … }`** — wrap a column/row.
-- **File picker** — `ui.open` / `ui.save` → `Option`/`Result` path. Scripts care.
-- **`ui.progress(t)`** — `0..1` if cheap.
+- ~~**`ui.select(options, current)`**~~ — done (array of strings → chosen string).
+- ~~**`ui.scroll { … }`**~~ — done (parent like `column`/`row`; wraps children in a scroll area).
+- ~~**File picker**~~ — done (`ui.open` / `ui.save` → `Option` path; native dialog during `run()`, `none` when cancelled / headless / `pump`).
+- ~~**`ui.progress(t)`**~~ — done (`0..1`, clamped).
 - A second window or a dialog besides `alert` is optional. Do not invent a window manager.
 
 Still not: canvas, animation, routing, menus-as-a-platform, tray, shaders, an a11y tree as a project, OS dark/light sync.

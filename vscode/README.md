@@ -1,14 +1,14 @@
 # RoseGold for VS Code / Cursor
 
-Language support for [RoseGold](https://github.com/allen6297/RRoseGold): highlighting, diagnostics, go to definition, hover, completions, format, run, and tests for `.rg` files.
+Language support for [RoseGold](https://github.com/allen6297/RoseGold): highlighting, diagnostics, go to definition, hover, completions, format, run, and tests for `.rg` files.
 
-Extension id: **`allen6297.allen6297`**.
+Extension id: **`allen6297.rosegold-language`**.
 
 ## Install
 
-Search for **RoseGold** in the Extensions view, or install by id `allen6297.allen6297`.
+Search for **RoseGold Language** in the Extensions view, or install by id `allen6297.rosegold-language`.
 
-This extension talks to the `rosegold` CLI. Build or install it from the [language repo](https://github.com/allen6297/RRoseGold) (`cargo build` or `cargo install --path .`). If the editor cannot find it, set **RoseGold › Cli Path** to the `rosegold` binary.
+This extension talks to the `rosegold` CLI. Build or install it from the [language repo](https://github.com/allen6297/RoseGold) (`cargo build` or `cargo install --path .`). If the editor cannot find it, set **RoseGold › Cli Path** to the `rosegold` binary.
 
 Sideload from a clone of the repo:
 

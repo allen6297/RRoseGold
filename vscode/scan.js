@@ -249,6 +249,94 @@ function scanSource(src) {
   return { symbols, classes, traits, signals, typedLocals: scanTypedLocals(masked) };
 }
 
+function importedModuleBinds(src) {
+  const masked = maskNoise(src);
+  const binds = [];
+  const seen = new Set();
+  const re =
+    /^(?:[ \t]*)import\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s+as\s+([A-Za-z_]\w*))?\s*;/gm;
+  let m;
+  while ((m = re.exec(masked))) {
+    const name = m[2] || m[1].split(".").pop();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    binds.push(name);
+  }
+  return binds;
+}
+
+function captureFrom(full, group, after) {
+  const at = full.indexOf(group, after);
+  return at < 0 ? -1 : at;
+}
+
+function moduleNameRanges(src) {
+  const masked = maskNoise(src);
+  const out = [];
+  const pushSegs = (from, text, declaration) => {
+    let i = 0;
+    while (i < text.length) {
+      if (text[i] === ".") {
+        i += 1;
+        continue;
+      }
+      let j = i;
+      while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j += 1;
+      out.push({ from: from + i, to: from + j, declaration });
+      i = j;
+    }
+  };
+
+  const importRe =
+    /^(?:[ \t]*)import\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s+as\s+([A-Za-z_]\w*))?\s*;/gm;
+  let m;
+  while ((m = importRe.exec(masked))) {
+    const full = m[0];
+    const pathAt = captureFrom(full, m[1], full.search(/\bimport\b/));
+    if (pathAt >= 0) pushSegs(m.index + pathAt, m[1], true);
+    if (m[2]) {
+      const asAt = full.lastIndexOf(" as ");
+      const aliasAt = captureFrom(full, m[2], asAt);
+      if (aliasAt >= 0) {
+        out.push({
+          from: m.index + aliasAt,
+          to: m.index + aliasAt + m[2].length,
+          declaration: true,
+        });
+      }
+    }
+  }
+
+  const fromRe = /^(?:[ \t]*)from\s+([A-Za-z_]\w*)\s+import\b/gm;
+  while ((m = fromRe.exec(masked))) {
+    const full = m[0];
+    const at = captureFrom(full, m[1], full.search(/\bfrom\b/));
+    if (at >= 0) {
+      out.push({
+        from: m.index + at,
+        to: m.index + at + m[1].length,
+        declaration: true,
+      });
+    }
+  }
+
+  const binds = importedModuleBinds(src);
+  if (binds.length) {
+    const useRe = new RegExp(
+      `\\b(${binds.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?=\\s*\\.)`,
+      "g"
+    );
+    while ((m = useRe.exec(masked))) {
+      out.push({
+        from: m.index,
+        to: m.index + m[1].length,
+        declaration: false,
+      });
+    }
+  }
+  return out;
+}
+
 function classAt(file, pos) {
   let hit = null;
   for (const c of file.classes) {
@@ -399,4 +487,6 @@ module.exports = {
   isSignalName,
   typeOfLocal,
   membersFor,
+  importedModuleBinds,
+  moduleNameRanges,
 };

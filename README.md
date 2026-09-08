@@ -2,7 +2,7 @@
 
 A small scripting language: lexer, parser, typecheck, tree-walking interpreter, and a VS Code / Cursor extension.
 
-Walkthrough: [docs/tour.md](docs/tour.md) and [`examples/tour.rg`](examples/tour.rg).
+Walkthrough: [docs/tour.md](docs/tour.md) and [`examples/tour.rg`](examples/tour.rg). UI: [docs/ui.md](docs/ui.md). Plan: [docs/plan.md](docs/plan.md).
 
 ## Build
 
@@ -21,14 +21,17 @@ rosegold check examples/hello.rg
 rosegold run examples/hello.rg
 rosegold run examples/process.rg hello   # extra args → process.argv()
 rosegold test examples/tests.rg
+rosegold fmt examples/hello.rg
 ```
 
 `run file.rg args…` puts the script path and extra args in `process.argv()`. Runtime errors list the call stack.
 
-Other examples: `tour.rg`, `concurrency.rg`, `json.rg`, `signals.rg`. `examples/ui.rg` is headless (tests). `examples/ui_window.rg` opens a window:
+`cargo build` writes `target/debug/rosegold`. That is not the same as `rosegold` on PATH (often an older `cargo install --path .`). After you change the interpreter, run with `cargo run --offline -- run examples/…` or `./target/debug/rosegold`.
+
+Other examples: `tour.rg`, `concurrency.rg`, `json.rg`, `signals.rg`. `examples/ui.rg` is headless (tests). Live window:
 
 ```bash
-rosegold run examples/ui_window.rg
+cargo run --offline -- run examples/ui_window.rg
 ```
 
 ## Vendor
@@ -53,7 +56,7 @@ files = ["lib.rg", "parse.rg"]
 
 ## Editor
 
-Extension id **`allen6297.allen6297`**. Sideload:
+Extension id **`allen6297.rosegold-language`**. Sideload:
 
 ```powershell
 .\vscode\install.ps1

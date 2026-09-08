@@ -7,9 +7,11 @@
     { "include": "#strings" },
     { "include": "#numbers" },
     { "include": "#decorators" },
+    { "include": "#imports" },
     { "include": "#keywords" },
     { "include": "#types" },
     { "include": "#constants" },
+    { "include": "#modules" },
     { "include": "#functions" },
     { "include": "#operators" }
   ],
@@ -119,6 +121,40 @@
         {
           "name": "constant.numeric.integer.rosegold",
           "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "name": "meta.import.rosegold",
+          "match": "\\b(from)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(import)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+          "captures": {
+            "1": { "name": "keyword.control.import.rosegold" },
+            "2": { "name": "entity.name.namespace.rosegold" },
+            "3": { "name": "keyword.control.import.rosegold" },
+            "4": { "name": "variable.other.import.rosegold" },
+            "5": { "name": "keyword.control.import.rosegold" },
+            "6": { "name": "entity.name.namespace.rosegold" }
+          }
+        },
+        {
+          "name": "meta.import.rosegold",
+          "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+          "captures": {
+            "1": { "name": "keyword.control.import.rosegold" },
+            "2": { "name": "entity.name.namespace.rosegold" },
+            "3": { "name": "keyword.control.import.rosegold" },
+            "4": { "name": "entity.name.namespace.rosegold" }
+          }
+        }
+      ]
+    },
+    "modules": {
+      "patterns": [
+        {
+          "name": "entity.name.namespace.rosegold",
+          "match": "\\b(str|math|option|result|io|time|process|json|path|http|regex|checks|ui)\\b(?=\\s*\\.)"
         }
       ]
     },

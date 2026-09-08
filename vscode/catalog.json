@@ -1080,7 +1080,7 @@
         "label": "ui",
         "detail": "stdlib",
         "signature": "import ui",
-        "doc": "Portable immediate-mode UI (egui). Requires `import ui;`. Same script on Windows / macOS / Linux. Widgets do not look native. `ui.run()` stays on the main thread and is not supported on wasm32. Do not `spawn` the UI. Immediate-mode inputs (`field` / `checkbox` / `slider`) pass current and return next. `ui.quit()` closes; `ui.invalidate()` requests a frame without input.",
+        "doc": "Portable immediate-mode UI (egui). Requires `import ui;`. Same script on Windows / macOS / Linux. Widgets do not look native. `ui.run()` stays on the main thread and is not supported on wasm32. Do not `spawn` the UI. Immediate-mode inputs (`field` / `checkbox` / `slider` / `select`) pass current and return next. `ui.open` / `ui.save` return `Option` (none if cancel, headless, or `pump`). `ui.quit()` closes; `ui.invalidate()` requests a frame without input.",
         "kind": "module"
     },
     {
@@ -1106,6 +1106,24 @@
         "params": [
             "msg"
         ]
+    },
+    {
+        "key": "ui.open",
+        "label": "open",
+        "detail": "()",
+        "signature": "ui.open(): Option",
+        "doc": "Native open-file dialog on the `ui.run()` thread. Returns `Some(path)` or `None` if cancelled. Headless / `__ui.pump()` / tests return `none` without opening a dialog. Call from a button, not every frame.",
+        "kind": "function",
+        "template": "open()"
+    },
+    {
+        "key": "ui.save",
+        "label": "save",
+        "detail": "()",
+        "signature": "ui.save(): Option",
+        "doc": "Native save-file dialog on the `ui.run()` thread. Returns `Some(path)` or `None` if cancelled. Headless / `__ui.pump()` / tests return `none` without opening a dialog. Call from a button, not every frame.",
+        "kind": "function",
+        "template": "save()"
     },
     {
         "key": "ui.window",
@@ -1140,6 +1158,18 @@
         "doc": "Horizontal stack. `ui.row { … }` is a trailing-closure parent scope, like `column`.",
         "kind": "function",
         "template": "row { $0 }",
+        "params": [
+            "body"
+        ]
+    },
+    {
+        "key": "ui.scroll",
+        "label": "scroll",
+        "detail": "(body)",
+        "signature": "ui.scroll(body: Fn): Widget",
+        "doc": "Scroll area parent. `ui.scroll { … }` wraps children like `column`. Chain `.height(n)` to cap the viewport.",
+        "kind": "function",
+        "template": "scroll { $0 }",
         "params": [
             "body"
         ]
@@ -1206,6 +1236,31 @@
             "value",
             "min",
             "max"
+        ]
+    },
+    {
+        "key": "ui.select",
+        "label": "select",
+        "detail": "(options, current)",
+        "signature": "ui.select(options: Array, current: String): String",
+        "doc": "Drop-down of strings. Pass the current choice; returns the next choice. Immediate mode: `choice = ui.select([\"a\", \"b\"], choice);`.",
+        "kind": "function",
+        "template": "select(${options}, ${current})",
+        "params": [
+            "options",
+            "current"
+        ]
+    },
+    {
+        "key": "ui.progress",
+        "label": "progress",
+        "detail": "(t)",
+        "signature": "ui.progress(t: Float): Widget",
+        "doc": "Progress bar. `t` is clamped to `0..1`. Display only (not an input). Chain `.width` / `.color` on the handle.",
+        "kind": "function",
+        "template": "progress(${t})",
+        "params": [
+            "t"
         ]
     },
     {

@@ -988,6 +988,31 @@ function activate(context) {
     })
   );
 
+  const tokenLegend = new vscode.SemanticTokensLegend(["namespace"], ["declaration"]);
+  context.subscriptions.push(
+    vscode.languages.registerDocumentSemanticTokensProvider(
+      { language: "rosegold" },
+      {
+        provideDocumentSemanticTokens(document) {
+          const builder = new vscode.SemanticTokensBuilder(tokenLegend);
+          const src = document.getText();
+          for (const r of scan.moduleNameRanges(src)) {
+            const start = document.positionAt(r.from);
+            builder.push(
+              start.line,
+              start.character,
+              r.to - r.from,
+              0,
+              r.declaration ? 1 : 0
+            );
+          }
+          return builder.build();
+        },
+      },
+      tokenLegend
+    )
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand("rosegold.runFile", async () => {
       const editor = vscode.window.activeTextEditor;
